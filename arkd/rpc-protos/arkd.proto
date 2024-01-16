@@ -1,0 +1,35 @@
+
+syntax = "proto3";
+
+package arkd;
+
+
+/// Public ark service for arkd.
+service ArkService {
+	rpc GetArkInfo(Empty) returns (ArkInfo) {}
+	rpc RequestOnboardCosign(OnboardCosignRequest) returns (OnboardCosignResponse) {}
+}
+
+message ArkInfo {
+	bytes pubkey = 1;
+	bytes xonly_pubkey = 2;
+}
+
+message OnboardCosignRequest {
+	bytes onboard_tx = 1;
+	uint32 onboard_tx_vout = 2;
+	bytes exit_tx = 3;
+	bytes exit_tx_signature = 4;
+}
+
+message OnboardCosignResponse {
+	bytes exit_tx_signature = 1;
+}
+
+
+/// Administration service for arkd.
+service AdminService {
+	rpc stop(Empty) returns (Empty) {}
+}
+
+message Empty {}

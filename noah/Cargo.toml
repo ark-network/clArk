@@ -1,0 +1,25 @@
+[package]
+name = "ark-noah"
+version = "0.0.0"
+license = "CC0-1.0"
+authors = [ "Steven Roose <steven@roose.io>" ]
+edition = "2021"
+
+[[bin]]
+name = "noah"
+
+[dependencies]
+arkd-rpc-client = { path = "../arkd-rpc-client" }
+
+anyhow.workspace = true
+bitcoin.workspace = true
+bip39.workspace = true
+miniscript.workspace = true
+bdk.workspace = true
+bdk_electrum.workspace = true
+bdk_file_store.workspace = true
+bdk_bitcoind_rpc.workspace = true
+prost.workspace = true
+tonic.workspace = true
+tokio.workspace = true
+

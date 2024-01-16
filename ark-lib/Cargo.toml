@@ -1,0 +1,9 @@
+[package]
+name = "ark-lib"
+version = "0.0.0"
+license = "CC0-1.0"
+authors = [ "Steven Roose <steven@roose.io>" ]
+edition = "2021"
+
+[dependencies]
+bitcoin = "0.30"

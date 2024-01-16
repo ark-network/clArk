@@ -1,0 +1,23 @@
+[package]
+name = "arkd"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tonic-build = "0.10"
+
+[dependencies]
+anyhow.workspace = true
+lazy_static.workspace = true
+bitcoin.workspace = true
+bip39.workspace = true
+bdk.workspace = true
+bdk_electrum.workspace = true
+bdk_file_store.workspace = true
+bdk_bitcoind_rpc.workspace = true
+electrum-client.workspace = true
+prost.workspace = true
+tonic.workspace = true
+tokio.workspace = true
+
+sled = "0.34.7"

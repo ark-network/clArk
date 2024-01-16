@@ -1,0 +1,38 @@
+
+[workspace]
+members = [
+  "ark-lib",
+  "arkd-rpc-client",
+  "arkd",
+  "noah",
+]
+exclude = [
+  "napkin",
+]
+
+[workspace.dependencies]
+# Rust stack
+anyhow = "1"
+lazy_static = "=1.4.0"
+
+# bitcoin stack
+bitcoin = "0.30"
+bip39 = { version = "2.0.0", features = [ "rand" ] }
+miniscript = "10.0"
+# using sanket's branch for musig2 code
+secp256k1-zkp = { git = "https://github.com/sanket1729/rust-secp256k1-zkp.git", rev = "60e631c24588a0c9e271badd61959294848c665d" }
+# bdk = "1.0.0-alpha.3"
+# bdk_electrum = "0.5.0"
+# bdk_file_store = "0.3.0"
+# bdk_bitcoind_rpc = "0.2.0"
+bdk = { git = "https://github.com/vladimirfomene/bdk.git", rev = "a4f28c079e3bc4500e8329aeed230d8100d38617" }
+bdk_electrum = { git = "https://github.com/vladimirfomene/bdk.git", rev = "a4f28c079e3bc4500e8329aeed230d8100d38617" }
+bdk_file_store = { git = "https://github.com/vladimirfomene/bdk.git", rev = "a4f28c079e3bc4500e8329aeed230d8100d38617" }
+bdk_bitcoind_rpc = { git = "https://github.com/vladimirfomene/bdk.git", rev = "a4f28c079e3bc4500e8329aeed230d8100d38617" }
+electrum-client = "0.19.0"
+
+
+# async + gRPC stack
+tonic = "0.10"
+prost = "0.12"
+tokio = "1.35"

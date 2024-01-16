@@ -1,0 +1,6 @@
+
+[*.rs]
+indent_style = tab
+
+[*.proto]
+indent_style = tab

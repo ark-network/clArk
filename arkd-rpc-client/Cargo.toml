@@ -1,0 +1,10 @@
+[package]
+name = "arkd-rpc-client"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+
+prost.workspace = true
+tonic.workspace = true
+tokio.workspace = true

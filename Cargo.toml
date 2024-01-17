@@ -37,3 +37,4 @@ electrum-client = "0.19.0"
 tonic = "0.10"
 prost = "0.12"
 tokio = "1.35"
+tokio-stream = { version = "0.1.14", features = [ "sync" ] }

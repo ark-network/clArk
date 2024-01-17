@@ -1,22 +1,14 @@
 
 use std::sync::Arc;
 
+use tokio_stream::{Stream, StreamExt};
+use tokio_stream::wrappers::BroadcastStream;
+
+use ark::Vtxo;
+
 use crate::App;
 use crate::rpc;
-
-impl App {
-	pub async fn start_public_rpc_server(self: &Arc<Self>) {
-		let addr = self.config.public_rpc_address;
-		let server = rpc::ArkServiceServer::new(self.clone());
-		//TODO(stevenroose) capture thread so we can cancel later
-		let _ = tokio::spawn(async move {
-			tonic::transport::Server::builder()
-				.add_service(server)
-				.serve(addr)
-				.await
-		});
-	}
-}
+use crate::round::RoundEvent;
 
 macro_rules! badarg {
     ($($arg:tt)*) => {{
@@ -70,5 +62,48 @@ impl rpc::ArkService for Arc<App> {
 			},
 		}))
 	}
+
+	async fn register_onboard_vtxo(
+		&self,
+		req: tonic::Request<rpc::RegisterOnboardVtxoRequest>,
+	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
+		let vtxo = Vtxo::decode(&req.into_inner().vtxo).map_err(|e| badarg!("invalid vtxo: {}", e))?;
+		//TODO(stevenroose) do sanity checks like to see if tx confirmed etc
+		self.db.register_onboard_vtxo(vtxo).to_status()?;
+		Ok(tonic::Response::new(rpc::Empty {}))
+	}
+
+	type SubscribeRoundsStream = Box<
+		dyn Stream<Item = Result<rpc::RoundEvent, tonic::Status>> + Unpin + Send + 'static
+	>;
+
+	async fn subscribe_rounds(
+		&self,
+		_req: tonic::Request<rpc::Empty>,
+	) -> Result<tonic::Response<Self::SubscribeRoundsStream>, tonic::Status> {
+		let chan = self.round_event_tx.subscribe();
+		let stream = BroadcastStream::new(chan);
+
+		Ok(tonic::Response::new(Box::new(stream.map(|e| {
+			let e = e.map_err(|e| internal!("broken stream: {}", e))?;
+			Ok(rpc::RoundEvent {
+				event: Some(match e {
+					RoundEvent::NewRound(id) => rpc::round_event::Event::NewRound(rpc::NewRoundEvent {
+						round_id: id.to_le_bytes().to_vec(),
+					}),
+				})
+			})
+		}))))
+	}
 }
 
+/// Run the public gRPC endpoint.
+pub async fn run_public_rpc_server(app: Arc<App>) -> anyhow::Result<()> {
+	let addr = app.config.public_rpc_address;
+	let server = rpc::ArkServiceServer::new(app);
+	tonic::transport::Server::builder()
+		.add_service(server)
+		.serve(addr)
+		.await?;
+	Ok(())
+}

@@ -7,7 +7,7 @@ use sled::transaction as tx;
 
 use ark::Vtxo;
 
-const VTXO_TREE: &str = "vtxos";
+const VTXO_TREE: &str = "noah_vtxos";
 
 
 pub struct Db {

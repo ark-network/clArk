@@ -1,14 +1,48 @@
 
+use std::io;
 use std::path::Path;
 
 use anyhow::{bail, Context};
+use bitcoin::secp256k1::schnorr;
+use serde::{Deserialize, Serialize};
 use sled::transaction as tx;
+
+use ark::{Vtxo, VtxoId};
+
+
+// TREE KEYS
+
+const VTXO_TREE: &str = "noah_vtxos";
+
+
+// ENTRY KEYS
 
 const MASTER_SEED: &str = "master_seed";
 const MASTER_MNEMONIC: &str = "master_mnemonic";
 
+
 pub struct Db {
 	db: sled::Db,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub enum StoredVtxo {
+	Onboard {
+		spec: ark::onboard::Spec,
+		exit_tx_signature: schnorr::Signature,
+	}
+}
+
+impl StoredVtxo {
+	pub fn encode(&self) -> Vec<u8> {
+		let mut buf = Vec::new();
+		ciborium::into_writer(self, &mut buf).unwrap();
+		buf
+	}
+
+	pub fn decode(bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
+		ciborium::from_reader(bytes)
+	}
 }
 
 impl Db {
@@ -39,5 +73,25 @@ impl Db {
 			tx.insert(MASTER_SEED, mnemonic.to_seed("").to_vec())?;
 			Ok(())
 		})?)
+	}
+
+	pub fn get_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<StoredVtxo>> {
+		Ok(if let Some(bytes) = self.db.open_tree(VTXO_TREE)?.get(id)? {
+			Some(StoredVtxo::decode(&bytes).context("db corruption")?)
+		} else {
+			None
+		})
+	}
+
+	pub fn register_onboard_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
+		let id = vtxo.id();
+		let stored = match vtxo {
+			Vtxo::Onboard { spec, exit_tx_signature, .. } => StoredVtxo::Onboard {
+				spec, exit_tx_signature,
+			},
+			_ => bail!("vtxo was not an onboard vtxo"),
+		};
+		self.db.open_tree(VTXO_TREE)?.insert(id, stored.encode())?;
+		Ok(())
 	}
 }

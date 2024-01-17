@@ -9,6 +9,7 @@ pub struct ArkInfo {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OnboardCosignRequest {
+    /// / Serialized `UserPart`
     #[prost(bytes = "vec", tag = "1")]
     pub user_part: ::prost::alloc::vec::Vec<u8>,
 }
@@ -17,6 +18,41 @@ pub struct OnboardCosignRequest {
 pub struct OnboardCosignResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub asp_part: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RegisterOnboardVtxoRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub vtxo: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NewRoundEvent {
+    #[prost(bytes = "vec", tag = "1")]
+    pub round_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FakeRoundEvent {
+    #[prost(bytes = "vec", tag = "1")]
+    pub round_ids: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundEvent {
+    #[prost(oneof = "round_event::Event", tags = "1, 2")]
+    pub event: ::core::option::Option<round_event::Event>,
+}
+/// Nested message and enum types in `RoundEvent`.
+pub mod round_event {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Event {
+        #[prost(message, tag = "1")]
+        NewRound(super::NewRoundEvent),
+        #[prost(message, tag = "2")]
+        FakeRound(super::FakeRoundEvent),
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -37,6 +73,23 @@ pub mod ark_service_server {
             request: tonic::Request<super::OnboardCosignRequest>,
         ) -> std::result::Result<
             tonic::Response<super::OnboardCosignResponse>,
+            tonic::Status,
+        >;
+        async fn register_onboard_vtxo(
+            &self,
+            request: tonic::Request<super::RegisterOnboardVtxoRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        /// Server streaming response type for the SubscribeRounds method.
+        type SubscribeRoundsStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::RoundEvent, tonic::Status>,
+            >
+            + Send
+            + 'static;
+        async fn subscribe_rounds(
+            &self,
+            request: tonic::Request<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<Self::SubscribeRoundsStream>,
             tonic::Status,
         >;
     }
@@ -207,6 +260,100 @@ pub mod ark_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/RegisterOnboardVtxo" => {
+                    #[allow(non_camel_case_types)]
+                    struct RegisterOnboardVtxoSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::RegisterOnboardVtxoRequest>
+                    for RegisterOnboardVtxoSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RegisterOnboardVtxoRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::register_onboard_vtxo(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = RegisterOnboardVtxoSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/SubscribeRounds" => {
+                    #[allow(non_camel_case_types)]
+                    struct SubscribeRoundsSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::ServerStreamingService<super::Empty>
+                    for SubscribeRoundsSvc<T> {
+                        type Response = super::RoundEvent;
+                        type ResponseStream = T::SubscribeRoundsStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::Empty>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::subscribe_rounds(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = SubscribeRoundsSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.server_streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

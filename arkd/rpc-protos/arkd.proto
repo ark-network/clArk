@@ -8,6 +8,13 @@ package arkd;
 service ArkService {
 	rpc GetArkInfo(Empty) returns (ArkInfo) {}
 	rpc RequestOnboardCosign(OnboardCosignRequest) returns (OnboardCosignResponse) {}
+	rpc RegisterOnboardVtxo(RegisterOnboardVtxoRequest) returns (Empty) {}
+
+	// * ARK ROUND INTERACTIONS *
+
+	rpc SubscribeRounds(Empty) returns (stream RoundEvent) {}
+
+
 }
 
 message ArkInfo {
@@ -16,11 +23,31 @@ message ArkInfo {
 }
 
 message OnboardCosignRequest {
+	/// Serialized `UserPart`
 	bytes user_part = 1;
 }
 
 message OnboardCosignResponse {
 	bytes asp_part = 1;
+}
+
+message RegisterOnboardVtxoRequest {
+	bytes vtxo = 1;
+}
+
+message NewRoundEvent {
+	bytes round_id = 1;
+}
+
+message FakeRoundEvent {
+	bytes round_ids = 1;
+}
+
+message RoundEvent {
+	oneof event {
+		NewRoundEvent new_round = 1;
+		FakeRoundEvent fake_round = 2;
+	}
 }
 
 

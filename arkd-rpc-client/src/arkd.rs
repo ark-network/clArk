@@ -9,6 +9,7 @@ pub struct ArkInfo {
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OnboardCosignRequest {
+    /// / Serialized `UserPart`
     #[prost(bytes = "vec", tag = "1")]
     pub user_part: ::prost::alloc::vec::Vec<u8>,
 }
@@ -17,6 +18,41 @@ pub struct OnboardCosignRequest {
 pub struct OnboardCosignResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub asp_part: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RegisterOnboardVtxoRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub vtxo: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NewRoundEvent {
+    #[prost(bytes = "vec", tag = "1")]
+    pub round_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FakeRoundEvent {
+    #[prost(bytes = "vec", tag = "1")]
+    pub round_ids: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundEvent {
+    #[prost(oneof = "round_event::Event", tags = "1, 2")]
+    pub event: ::core::option::Option<round_event::Event>,
+}
+/// Nested message and enum types in `RoundEvent`.
+pub mod round_event {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Event {
+        #[prost(message, tag = "1")]
+        NewRound(super::NewRoundEvent),
+        #[prost(message, tag = "2")]
+        FakeRound(super::FakeRoundEvent),
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -153,6 +189,53 @@ pub mod ark_service_client {
             req.extensions_mut()
                 .insert(GrpcMethod::new("arkd.ArkService", "RequestOnboardCosign"));
             self.inner.unary(req, path, codec).await
+        }
+        pub async fn register_onboard_vtxo(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RegisterOnboardVtxoRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/RegisterOnboardVtxo",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "RegisterOnboardVtxo"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn subscribe_rounds(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::RoundEvent>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/SubscribeRounds",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "SubscribeRounds"));
+            self.inner.server_streaming(req, path, codec).await
         }
     }
 }

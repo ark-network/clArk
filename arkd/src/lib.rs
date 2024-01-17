@@ -3,17 +3,21 @@
 mod database;
 mod rpc;
 mod rpcserver;
+mod round;
 
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::str::FromStr;
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use bitcoin::{Amount, Address};
 use bitcoin::bip32;
 use bitcoin::secp256k1::{self, PublicKey, SecretKey};
+
+use round::RoundEvent;
 
 const DB_MAGIC: &str = "bdk_wallet";
 
@@ -27,6 +31,22 @@ pub struct Config {
 	pub network: bitcoin::Network,
 	pub public_rpc_address: SocketAddr,
 	pub datadir: PathBuf,
+
+	pub round_interval: Duration,
+	pub round_submit_time: Duration,
+}
+
+// NB some random defaults to have something
+impl Default for Config {
+	fn default() -> Config {
+		Config {
+			network: bitcoin::Network::Regtest,
+			public_rpc_address: "127.0.0.1:350350".parse().unwrap(),
+			datadir: "./".parse().unwrap(),
+			round_interval: Duration::from_secs(10),
+			round_submit_time: Duration::from_secs(2),
+		}
+	}
 }
 
 pub struct App {
@@ -37,6 +57,8 @@ pub struct App {
 	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
 	// electrum: electrum_client::Client,
+	
+	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
 }
 
 impl App {
@@ -83,6 +105,7 @@ impl App {
 			bdk_bitcoind_rpc::bitcoincore_rpc::Auth::UserPass("user".into(), "pass".into()),
 		).context("failed to create bitcoind rpc client")?;
 
+		let (round_event_tx, _rx) = tokio::sync::broadcast::channel(8);
 		let ret = Arc::new(App {
 			config: config,
 			db: db,
@@ -90,11 +113,18 @@ impl App {
 			master_pubkey: master_pubkey,
 			wallet: Mutex::new(wallet),
 			bitcoind: bitcoind,
+
+			round_event_tx: round_event_tx,
 		});
 
 		let app = ret.clone();
 		let _ = tokio::spawn(async move {
-			app.start_public_rpc_server().await;
+			rpcserver::run_public_rpc_server(app).await.expect("grpc server failed");
+		});
+
+		let app = ret.clone();
+		let _ = tokio::spawn(async move {
+			round::run_round_scheduler(app).await.expect("round scheduler error")
 		});
 
 		Ok(ret)

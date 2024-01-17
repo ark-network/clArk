@@ -10,17 +10,18 @@ exclude = [
   "napkin",
 ]
 
+# TODO(stevenroose) at some point probably move these inline
 [workspace.dependencies]
 # Rust stack
 anyhow = "1"
 lazy_static = "=1.4.0"
+serde = { version = "1", feature = [ "derive" ] }
+ciborium = "0.2.1"
 
 # bitcoin stack
 bitcoin = "0.30"
 bip39 = { version = "2.0.0", features = [ "rand" ] }
 miniscript = "10.0"
-# using sanket's branch for musig2 code
-secp256k1-zkp = { git = "https://github.com/sanket1729/rust-secp256k1-zkp.git", rev = "60e631c24588a0c9e271badd61959294848c665d" }
 # bdk = "1.0.0-alpha.3"
 # bdk_electrum = "0.5.0"
 # bdk_file_store = "0.3.0"

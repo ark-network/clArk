@@ -16,14 +16,11 @@ message ArkInfo {
 }
 
 message OnboardCosignRequest {
-	bytes onboard_tx = 1;
-	uint32 onboard_tx_vout = 2;
-	bytes exit_tx = 3;
-	bytes exit_tx_signature = 4;
+	bytes user_part = 1;
 }
 
 message OnboardCosignResponse {
-	bytes exit_tx_signature = 1;
+	bytes asp_part = 1;
 }
 
 

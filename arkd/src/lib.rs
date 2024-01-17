@@ -2,6 +2,7 @@
 
 mod database;
 mod rpc;
+mod rpcserver;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -90,7 +91,11 @@ impl App {
 			wallet: Mutex::new(wallet),
 			bitcoind: bitcoind,
 		});
-		ret.start_public_rpc_server();
+
+		let app = ret.clone();
+		let _ = tokio::spawn(async move {
+			app.start_public_rpc_server().await;
+		});
 
 		Ok(ret)
 	}
@@ -141,36 +146,7 @@ impl App {
 		Ok(Amount::from_sat(balance.total()))
 	}
 
-	pub async fn start_public_rpc_server(self: &Arc<Self>) {
-		let addr = self.config.public_rpc_address;
-		let server = rpc::ArkServiceServer::new(self.clone());
-		//TODO(stevenroose) capture thread so we can cancel later
-		let _ = tokio::spawn(async move {
-			tonic::transport::Server::builder()
-				.add_service(server)
-				.serve(addr)
-				.await
-		});
+	pub fn cosign_onboard(self: &Arc<Self>, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {
+		ark::onboard::new_asp(&user_part, self.master_key)
 	}
 }
-
-#[tonic::async_trait]
-impl rpc::ArkService for Arc<App> {
-	async fn get_ark_info(
-		&self,
-		_: tonic::Request<rpc::Empty>,
-	) -> Result<tonic::Response<rpc::ArkInfo>, tonic::Status> {
-		let ret = rpc::ArkInfo {
-			pubkey: self.master_pubkey.serialize().to_vec(),
-			xonly_pubkey: self.master_pubkey.x_only_public_key().0.serialize().to_vec(),
-		};
-		Ok(tonic::Response::new(ret))
-	}
-	async fn request_onboard_cosign(
-		&self,
-		req: tonic::Request<rpc::OnboardCosignRequest>,
-	) -> Result<tonic::Response<rpc::OnboardCosignResponse>, tonic::Status> {
-		unimplemented!();
-	}
-}
-

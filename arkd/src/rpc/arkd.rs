@@ -10,19 +10,13 @@ pub struct ArkInfo {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OnboardCosignRequest {
     #[prost(bytes = "vec", tag = "1")]
-    pub onboard_tx: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint32, tag = "2")]
-    pub onboard_tx_vout: u32,
-    #[prost(bytes = "vec", tag = "3")]
-    pub exit_tx: ::prost::alloc::vec::Vec<u8>,
-    #[prost(bytes = "vec", tag = "4")]
-    pub exit_tx_signature: ::prost::alloc::vec::Vec<u8>,
+    pub user_part: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OnboardCosignResponse {
     #[prost(bytes = "vec", tag = "1")]
-    pub exit_tx_signature: ::prost::alloc::vec::Vec<u8>,
+    pub asp_part: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -15,7 +15,8 @@ use bdk_electrum::{
     ElectrumExt, ElectrumUpdate,
 };
 use bdk_file_store::Store;
-use bitcoin::{Address, Amount, Network, Txid};
+use bitcoin::{Address, Amount, Network, Transaction, Txid};
+use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 use bitcoin::bip32;
 use miniscript::Descriptor;
 
@@ -89,20 +90,30 @@ impl Wallet {
 		Ok(Amount::from_sat(balance.total()))
 	}
 
-	pub fn send_money(&mut self, address: Address, amount: Amount) -> anyhow::Result<Txid> {
+	pub fn prepare_tx(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Psbt> {
 		let mut tx_builder = self.wallet.build_tx();
 		tx_builder
-			.add_recipient(address.script_pubkey(), amount.to_sat())
+			.add_recipient(dest.script_pubkey(), amount.to_sat())
 			.enable_rbf();
+		Ok(tx_builder.finish()?)
+	}
 
-		let mut psbt = tx_builder.finish()?;
+	pub fn finish_tx(&mut self, mut psbt: Psbt) -> anyhow::Result<Transaction> {
 		let finalized = self.wallet.sign(&mut psbt, SignOptions::default())?;
 		assert!(finalized);
+		Ok(psbt.extract_tx())
+	}
 
-		let tx = psbt.extract_tx();
-		bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&self.bitcoind, &tx)?;
+	pub fn broadcast_tx(&self, tx: &Transaction) -> anyhow::Result<Txid> {
+		bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&self.bitcoind, tx)?;
 		// self.electrum.transaction_broadcast(&tx)?;
 		Ok(tx.txid())
+	}
+
+	pub fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
+		let mut psbt = self.prepare_tx(dest, amount)?;
+		let tx = self.finish_tx(psbt)?;
+		self.broadcast_tx(&tx)
 	}
 
 	pub fn new_address(&mut self) -> anyhow::Result<Address> {

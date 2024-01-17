@@ -37,6 +37,10 @@ name = "ark-lib"
 version = "0.0.0"
 dependencies = [
  "bitcoin 0.30.0",
+ "ciborium",
+ "lazy_static",
+ "secp256k1-zkp",
+ "serde",
 ]
 
 [[package]]
@@ -44,6 +48,7 @@ name = "ark-noah"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "ark-lib",
  "arkd-rpc-client",
  "bdk",
  "bdk_bitcoind_rpc",
@@ -51,8 +56,12 @@ dependencies = [
  "bdk_file_store",
  "bip39",
  "bitcoin 0.30.0",
+ "ciborium",
+ "lazy_static",
  "miniscript",
  "prost",
+ "serde",
+ "sled",
  "tokio",
  "tonic",
 ]
@@ -62,15 +71,18 @@ name = "arkd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ark-lib",
  "bdk",
  "bdk_bitcoind_rpc",
  "bdk_electrum",
  "bdk_file_store",
  "bip39",
  "bitcoin 0.30.0",
+ "ciborium",
  "electrum-client 0.19.0",
  "lazy_static",
  "prost",
+ "serde",
  "sled",
  "tokio",
  "tonic",
@@ -429,6 +441,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "ciborium"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "effd91f6c78e5a4ace8a5d3c0b6bfaec9e2baaef55f3efc00e45fb2e477ee926"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdf919175532b369853f5d5e20b26b43112613fd6fe7aee757e35f7a44642656"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "defaa24ecc093c77630e6c15e17c51f5e187bf35ee514f4e2d67baaa96dae22b"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -621,6 +660,12 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
+
+[[package]]
+name = "half"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eabb4a44450da02c90444cf74558da904edde8fb4e9035a9a6a4e15445af0bd7"
 
 [[package]]
 name = "hashbrown"
@@ -1259,6 +1304,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d1746aae42c19d583c3c1a8c646bfad910498e2051c551a7f2e3c0c9fbb7eb"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "secp256k1-zkp"
+version = "0.10.0"
+source = "git+https://github.com/sanket1729/rust-secp256k1-zkp.git?rev=60e631c24588a0c9e271badd61959294848c665d#60e631c24588a0c9e271badd61959294848c665d"
+dependencies = [
+ "bitcoin-private",
+ "secp256k1 0.28.1",
+ "secp256k1-zkp-sys",
+ "serde",
+]
+
+[[package]]
+name = "secp256k1-zkp-sys"
+version = "0.9.1"
+source = "git+https://github.com/sanket1729/rust-secp256k1-zkp.git?rev=60e631c24588a0c9e271badd61959294848c665d#60e631c24588a0c9e271badd61959294848c665d"
+dependencies = [
+ "cc",
+ "secp256k1-sys 0.9.2",
 ]
 
 [[package]]

@@ -1,39 +1,41 @@
 
-pub use secp256k1_zkp as secp;
+pub use secp256k1_zkp as zkp;
 pub use secp256k1_zkp::{
 	MusigAggNonce, MusigKeyAggCache, MusigPubNonce, MusigPartialSignature, MusigSecNonce,
-	MusigSession, MusigSessionId, Message,
+	MusigSession, MusigSessionId,
 };
 use bitcoin::secp256k1::{rand, schnorr, PublicKey, SecretKey, XOnlyPublicKey};
 
+use crate::util;
+
 lazy_static::lazy_static! {
-	/// Global secp context.
-	pub static ref SECP: secp256k1_zkp::Secp256k1<secp256k1_zkp::All> = secp256k1_zkp::Secp256k1::new();
+       /// Global secp context.
+       pub static ref SECP: zkp::Secp256k1<zkp::All> = zkp::Secp256k1::new();
 }
 
-pub fn xonly_from(pk: secp256k1_zkp::XOnlyPublicKey) -> XOnlyPublicKey {
+pub fn xonly_from(pk: zkp::XOnlyPublicKey) -> XOnlyPublicKey {
 	XOnlyPublicKey::from_slice(&pk.serialize()).unwrap()
 }
 
-pub fn pubkey_to(pk: PublicKey) -> secp256k1_zkp::PublicKey {
-	secp256k1_zkp::PublicKey::from_slice(&pk.serialize()).unwrap()
+pub fn pubkey_to(pk: PublicKey) -> zkp::PublicKey {
+	zkp::PublicKey::from_slice(&pk.serialize()).unwrap()
 }
 
-pub fn seckey_to(sk: SecretKey) -> secp256k1_zkp::SecretKey {
-	secp256k1_zkp::SecretKey::from_slice(&sk.secret_bytes()).unwrap()
+pub fn seckey_to(sk: SecretKey) -> zkp::SecretKey {
+	zkp::SecretKey::from_slice(&sk.secret_bytes()).unwrap()
 }
 
-pub fn sig_from(s: secp256k1_zkp::schnorr::Signature) -> schnorr::Signature {
+pub fn sig_from(s: zkp::schnorr::Signature) -> schnorr::Signature {
 	schnorr::Signature::from_slice(&s.serialize()).unwrap()
 }
 
-pub fn key_agg(keys: &[PublicKey]) -> MusigKeyAggCache {
-	let mut keys = keys.iter().map(|k| pubkey_to(*k)).collect::<Vec<_>>();
+pub fn key_agg<'a>(keys: impl IntoIterator<Item = PublicKey>) -> MusigKeyAggCache {
+	let mut keys = keys.into_iter().map(|k| pubkey_to(k)).collect::<Vec<_>>();
 	keys.sort_by_key(|k| k.serialize());
 	MusigKeyAggCache::new(&SECP, &keys)
 }
 
-pub fn combine_keys(keys: &[PublicKey]) -> XOnlyPublicKey {
+pub fn combine_keys(keys: impl IntoIterator<Item = PublicKey>) -> XOnlyPublicKey {
 	xonly_from(key_agg(keys).agg_pk())
 }
 
@@ -41,23 +43,22 @@ pub fn combine_keys(keys: &[PublicKey]) -> XOnlyPublicKey {
 /// given counterparty key and nonce.
 pub fn deterministic_partial_sign(
 	my_key: SecretKey,
-	their_key: PublicKey,
-	their_nonce: MusigPubNonce,
+	their_pubkeys: impl IntoIterator<Item = PublicKey>,
+	their_nonces: impl IntoIterator<Item = MusigPubNonce>,
 	msg: [u8; 32],
 ) -> (MusigPubNonce, MusigPartialSignature) {
-	let my_pubkey = my_key.public_key(&crate::SECP);
+	let my_pubkey = my_key.public_key(&util::SECP);
 	//TODO(stevenroose) consider taking keypair for efficiency
-	let keypair = secp256k1_zkp::Keypair::from_seckey_slice(&SECP, &my_key.secret_bytes()).unwrap();
-	let agg = key_agg(&[their_key, my_pubkey]);
+	let keypair = zkp::Keypair::from_seckey_slice(&SECP, &my_key.secret_bytes()).unwrap();
+	let agg = key_agg(their_pubkeys.into_iter().chain(Some(my_pubkey)));
 
 	let session_id = MusigSessionId::assume_unique_per_nonce_gen(rand::random());
-
-	let msg = Message::from_digest(msg);
-	let (sec_nonce, pub_nonce) = secp::new_musig_nonce_pair(
+	let msg = zkp::Message::from_digest(msg);
+	let (sec_nonce, pub_nonce) = zkp::new_musig_nonce_pair(
 		&SECP, session_id, Some(&agg), Some(seckey_to(my_key)), pubkey_to(my_pubkey), Some(msg), None,
 	).expect("asp nonce gen error");
 
-	let agg_nonce = MusigAggNonce::new(&SECP, &[their_nonce, pub_nonce]);
+	let agg_nonce = MusigAggNonce::new(&SECP, &their_nonces.into_iter().chain(Some(pub_nonce)).collect::<Vec<_>>());
 	let session = MusigSession::new(&SECP, &agg, agg_nonce, msg);
 	let sig = session.partial_sign(&SECP, sec_nonce, &keypair, &agg)
 		.expect("asp partial sign error");
@@ -66,18 +67,18 @@ pub fn deterministic_partial_sign(
 
 pub fn partial_sign(
 	privkey: SecretKey,
-	pubkeys: &[PublicKey],
+	pubkeys: impl IntoIterator<Item = PublicKey>,
 	sec_nonce: MusigSecNonce,
-	pub_nonces: &[MusigPubNonce],
+	pub_nonces: impl IntoIterator<Item = MusigPubNonce>,
 	sighash: [u8; 32],
 	other_sigs: Option<&[MusigPartialSignature]>,
 ) -> (MusigPartialSignature, Option<schnorr::Signature>) {
 	let agg = key_agg(pubkeys);
-	let agg_nonce = MusigAggNonce::new(&SECP, pub_nonces);
-	let msg = secp256k1_zkp::Message::from_digest(sighash);
+	let agg_nonce = MusigAggNonce::new(&SECP, &pub_nonces.into_iter().collect::<Vec<_>>());
+	let msg = zkp::Message::from_digest(sighash);
 	let session = MusigSession::new(&SECP, &agg, agg_nonce, msg);
 	//TODO(stevenroose) consider taking keypair for efficiency
-	let keypair = secp256k1_zkp::Keypair::from_seckey_slice(&SECP, &privkey.secret_bytes()).unwrap();
+	let keypair = zkp::Keypair::from_seckey_slice(&SECP, &privkey.secret_bytes()).unwrap();
 	let my_sig = session.partial_sign(&SECP, sec_nonce, &keypair, &agg).expect("musig partial sign error");
 	let final_sig = if let Some(others) = other_sigs {
 		let mut sigs = Vec::with_capacity(others.len() + 1);

@@ -1,26 +1,20 @@
 
 
+pub mod connectors;
 pub mod musig;
 pub mod onboard;
 mod util;
 
 
-use std::fmt;
-use std::io::{self, Write};
+use std::{fmt, io};
 
-use bitcoin::{Amount, OutPoint, Script, ScriptBuf, Txid, TxOut};
+use bitcoin::{OutPoint, Txid};
 use bitcoin::hashes::Hash;
-use bitcoin::opcodes;
-use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
+use bitcoin::secp256k1::{self, schnorr};
 use serde::{Deserialize, Serialize};
 
 
-lazy_static::lazy_static! {
-	/// Global secp context.
-	static ref SECP: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
-}
-
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VtxoId([u8; 36]);
 
 impl VtxoId {

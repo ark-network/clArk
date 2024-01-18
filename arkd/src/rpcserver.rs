@@ -88,7 +88,7 @@ impl rpc::ArkService for Arc<App> {
 			let e = e.map_err(|e| internal!("broken stream: {}", e))?;
 			Ok(rpc::RoundEvent {
 				event: Some(match e {
-					RoundEvent::NewRound(id) => rpc::round_event::Event::NewRound(rpc::NewRoundEvent {
+					RoundEvent::NewRound { id } => rpc::round_event::Event::NewRound(rpc::NewRoundEvent {
 						round_id: id.to_le_bytes().to_vec(),
 					}),
 				})

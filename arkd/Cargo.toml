@@ -13,6 +13,7 @@ ark-lib = { path = "../ark-lib" }
 
 anyhow.workspace = true
 lazy_static.workspace = true
+log.workspace = true
 serde.workspace = true
 ciborium.workspace = true
 bitcoin.workspace = true

@@ -1,5 +1,7 @@
 
 
+#[macro_use] extern crate log;
+
 mod database;
 mod rpc;
 mod rpcserver;
@@ -17,7 +19,7 @@ use bitcoin::{Amount, Address};
 use bitcoin::bip32;
 use bitcoin::secp256k1::{self, PublicKey, SecretKey};
 
-use round::RoundEvent;
+use round::{RoundEvent, RoundInput};
 
 const DB_MAGIC: &str = "bdk_wallet";
 
@@ -59,6 +61,7 @@ pub struct App {
 	// electrum: electrum_client::Client,
 	
 	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
+	round_input_tx: tokio::sync::mpsc::UnboundedSender<RoundInput>,
 }
 
 impl App {
@@ -106,6 +109,7 @@ impl App {
 		).context("failed to create bitcoind rpc client")?;
 
 		let (round_event_tx, _rx) = tokio::sync::broadcast::channel(8);
+		let (round_input_tx, round_input_rx) = tokio::sync::mpsc::unbounded_channel();
 		let ret = Arc::new(App {
 			config: config,
 			db: db,
@@ -115,6 +119,7 @@ impl App {
 			bitcoind: bitcoind,
 
 			round_event_tx: round_event_tx,
+			round_input_tx: round_input_tx,
 		});
 
 		let app = ret.clone();
@@ -124,7 +129,7 @@ impl App {
 
 		let app = ret.clone();
 		let _ = tokio::spawn(async move {
-			round::run_round_scheduler(app).await.expect("round scheduler error")
+			round::run_round_scheduler(app, round_input_rx).await.expect("round scheduler error")
 		});
 
 		Ok(ret)

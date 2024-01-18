@@ -3,6 +3,7 @@ use std::io;
 use std::path::Path;
 
 use anyhow::{bail, Context};
+use bitcoin::{Amount, OutPoint};
 use bitcoin::secp256k1::schnorr;
 use serde::{Deserialize, Serialize};
 use sled::transaction as tx;
@@ -28,20 +29,38 @@ pub struct Db {
 #[derive(Debug, Deserialize, Serialize)]
 pub enum StoredVtxo {
 	Onboard {
+		#[serde(skip)]
+		utxo: OutPoint,
 		spec: ark::onboard::Spec,
 		exit_tx_signature: schnorr::Signature,
 	}
 }
 
 impl StoredVtxo {
-	pub fn encode(&self) -> Vec<u8> {
+	pub fn id(&self) -> VtxoId {
+		match self {
+			StoredVtxo::Onboard { utxo, .. } => VtxoId::new(*utxo),
+		}
+	}
+
+	pub fn amount(&self) -> Amount {
+		match self {
+			StoredVtxo::Onboard { spec, .. } => spec.amount,
+		}
+	}
+
+	fn encode(&self) -> Vec<u8> {
 		let mut buf = Vec::new();
 		ciborium::into_writer(self, &mut buf).unwrap();
 		buf
 	}
 
-	pub fn decode(bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
-		ciborium::from_reader(bytes)
+	fn decode(id: VtxoId, bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
+		let ret = ciborium::from_reader(bytes)?;
+		match ret {
+			StoredVtxo::Onboard { ref mut utxo, .. } => *utxo = id.utxo(),
+		}
+		Ok(ret)
 	}
 }
 
@@ -77,7 +96,7 @@ impl Db {
 
 	pub fn get_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<StoredVtxo>> {
 		Ok(if let Some(bytes) = self.db.open_tree(VTXO_TREE)?.get(id)? {
-			Some(StoredVtxo::decode(&bytes).context("db corruption")?)
+			Some(StoredVtxo::decode(id, &bytes).context("db corruption")?)
 		} else {
 			None
 		})
@@ -87,7 +106,7 @@ impl Db {
 		let id = vtxo.id();
 		let stored = match vtxo {
 			Vtxo::Onboard { spec, exit_tx_signature, .. } => StoredVtxo::Onboard {
-				spec, exit_tx_signature,
+				utxo: vtxo.utxo(), spec, exit_tx_signature,
 			},
 			_ => bail!("vtxo was not an onboard vtxo"),
 		};

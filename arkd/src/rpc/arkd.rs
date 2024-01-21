@@ -5,6 +5,8 @@ pub struct ArkInfo {
     pub pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub xonly_pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub nb_round_nonces: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -27,15 +29,33 @@ pub struct RegisterOnboardVtxoRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NewRoundEvent {
-    #[prost(bytes = "vec", tag = "1")]
-    pub round_id: ::prost::alloc::vec::Vec<u8>,
+pub struct NewRound {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FakeRoundEvent {
+pub struct ForfeitNonces {
     #[prost(bytes = "vec", tag = "1")]
-    pub round_ids: ::prost::alloc::vec::Vec<u8>,
+    pub input_vtxo_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundProposal {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub vtxos_spec: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub vtxos_signers: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub vtxos_agg_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "6")]
+    pub forfeit_nonces: ::prost::alloc::vec::Vec<ForfeitNonces>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -49,10 +69,55 @@ pub mod round_event {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Event {
         #[prost(message, tag = "1")]
-        NewRound(super::NewRoundEvent),
+        NewRound(super::NewRound),
         #[prost(message, tag = "2")]
-        FakeRound(super::FakeRoundEvent),
+        RoundProposal(super::RoundProposal),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Destination {
+    #[prost(uint64, tag = "1")]
+    pub amount: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub public_key: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SubmitPaymentRequest {
+    /// TODO(stevenroose) add proof of vtxo ownership
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub input_vtxo_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "2")]
+    pub destinations: ::prost::alloc::vec::Vec<Destination>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cosign_pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub public_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForfeitSignatures {
+    #[prost(bytes = "vec", tag = "1")]
+    pub input_vtxo_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VtxoSignatures {
+    #[prost(bytes = "vec", tag = "1")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundSignatures {
+    #[prost(message, repeated, tag = "1")]
+    pub forfeit: ::prost::alloc::vec::Vec<ForfeitSignatures>,
+    #[prost(message, optional, tag = "2")]
+    pub vtxo: ::core::option::Option<VtxoSignatures>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -92,6 +157,14 @@ pub mod ark_service_server {
             tonic::Response<Self::SubscribeRoundsStream>,
             tonic::Status,
         >;
+        async fn submit_payment(
+            &self,
+            request: tonic::Request<super::SubmitPaymentRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        async fn provide_signatures(
+            &self,
+            request: tonic::Request<super::RoundSignatures>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
     }
     /// / Public ark service for arkd.
     #[derive(Debug)]
@@ -354,6 +427,98 @@ pub mod ark_service_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/SubmitPayment" => {
+                    #[allow(non_camel_case_types)]
+                    struct SubmitPaymentSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::SubmitPaymentRequest>
+                    for SubmitPaymentSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::SubmitPaymentRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::submit_payment(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = SubmitPaymentSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/ProvideSignatures" => {
+                    #[allow(non_camel_case_types)]
+                    struct ProvideSignaturesSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::RoundSignatures>
+                    for ProvideSignaturesSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::RoundSignatures>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::provide_signatures(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = ProvideSignaturesSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

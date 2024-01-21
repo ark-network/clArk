@@ -36,4 +36,11 @@ impl Db {
 		self.db.open_tree(VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?;
 		Ok(())
 	}
+
+	pub fn get_all_vtxos(&self) -> anyhow::Result<Vec<Vtxo>> {
+		self.db.open_tree(VTXO_TREE)?.iter().map(|v| {
+			let (_key, val) = v?;
+			Ok(Vtxo::decode(&val)?)
+		}).collect()
+	}
 }

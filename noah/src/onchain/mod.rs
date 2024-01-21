@@ -11,8 +11,8 @@ use anyhow::Context;
 use bdk::wallet::Update;
 use bdk::SignOptions;
 use bdk_electrum::{
-    electrum_client::{self, ElectrumApi},
-    ElectrumExt, ElectrumUpdate,
+	electrum_client::{self, ElectrumApi},
+	ElectrumExt, ElectrumUpdate,
 };
 use bdk_file_store::Store;
 use bitcoin::{Address, Amount, Network, Transaction, Txid};
@@ -30,7 +30,7 @@ impl Wallet {
 	pub fn create(network: Network, seed: [u8; 64], dir: &Path) -> anyhow::Result<Wallet> {
 		let db_path = dir.join("onchain_db");
 		fs::create_dir_all(&db_path).context("failed to crate onchain wallet dir")?;
-    	let db = Store::<bdk::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
+		let db = Store::<bdk::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
 
 		//TODO(stevenroose) taproot?
 		let xpriv = bip32::ExtendedPrivKey::new_master(network, &seed).expect("valid seed");
@@ -39,7 +39,7 @@ impl Wallet {
 
 		let mut wallet = bdk::Wallet::new_or_load(&edesc, Some(&idesc), db, network)
 			.context("failed to create or load bdk wallet")?;
-    	
+		
 		// sync
 		// let electrum_client = electrum_client::Client::new("ssl://electrum.blockstream.info:60002").unwrap();
 		let bitcoind = bdk_bitcoind_rpc::bitcoincore_rpc::Client::new(
@@ -57,11 +57,11 @@ impl Wallet {
 		let prev_tip = self.wallet.latest_checkpoint();
 		// let keychain_spks = self.wallet.spks_of_all_keychains();
 
-        let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
-        while let Some(em) = emitter.next_block()? {
+		let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
+		while let Some(em) = emitter.next_block()? {
 			self.wallet.apply_block_connected_to(&em.block, em.block_height(), em.connected_to())?;
 			self.wallet.commit()?;
-        }
+		}
 
 		// mempool
 		let mempool = emitter.mempool()?;

@@ -56,7 +56,7 @@ impl StoredVtxo {
 	}
 
 	fn decode(id: VtxoId, bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
-		let ret = ciborium::from_reader(bytes)?;
+		let mut ret = ciborium::from_reader(bytes)?;
 		match ret {
 			StoredVtxo::Onboard { ref mut utxo, .. } => *utxo = id.utxo(),
 		}
@@ -104,9 +104,10 @@ impl Db {
 
 	pub fn register_onboard_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
 		let id = vtxo.id();
+		let utxo = vtxo.utxo();
 		let stored = match vtxo {
 			Vtxo::Onboard { spec, exit_tx_signature, .. } => StoredVtxo::Onboard {
-				utxo: vtxo.utxo(), spec, exit_tx_signature,
+				utxo: utxo, spec, exit_tx_signature,
 			},
 			_ => bail!("vtxo was not an onboard vtxo"),
 		};

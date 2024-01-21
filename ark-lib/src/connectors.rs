@@ -80,11 +80,11 @@ impl ConnectorChain {
 	}
 
 	/// Iterator over the signed transactions in this chain.
-	pub fn iter_signed_txs(&self, privkey: SecretKey) -> ConnectorTxIter {
+	pub fn iter_signed_txs<'a>(&'a self, sign_key: &'a KeyPair) -> ConnectorTxIter<'a> {
 		ConnectorTxIter {
 			len: self.len,
 			spk: &self.spk,
-			privkey: Some(privkey),
+			sign_key: Some(sign_key),
 			prev: self.utxo,
 			idx: 0,
 		}
@@ -95,7 +95,7 @@ impl ConnectorChain {
 		ConnectorTxIter {
 			len: self.len,
 			spk: &self.spk,
-			privkey: None,
+			sign_key: None,
 			prev: self.utxo,
 			idx: 0,
 		}
@@ -113,7 +113,7 @@ impl ConnectorChain {
 pub struct ConnectorTxIter<'a> {
 	len: usize,
 	spk: &'a Script,
-	privkey: Option<SecretKey>,
+	sign_key: Option<&'a KeyPair>,
 
 	prev: OutPoint,
 	idx: usize,
@@ -148,7 +148,7 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 			],
 		};
 
-		if let Some(key) = self.privkey {
+		if let Some(keypair) = self.sign_key {
 			let prevout = TxOut {
 				script_pubkey: self.spk.to_owned(),
 				value: ConnectorChain::required_budget(self.len - self.idx).to_sat(),
@@ -163,8 +163,7 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 			).expect("sighash error");
 			// TODO(stevenroose) use from_digest here after secp version update
 			let msg = secp256k1::Message::from_slice(&sighash.to_byte_array()).unwrap();
-			let keypair = KeyPair::from_secret_key(&util::SECP, &key);
-			let sig = util::SECP.sign_schnorr(&msg, &keypair);
+			let sig = util::SECP.sign_schnorr(&msg, keypair);
 			ret.input[0].witness = Witness::from_slice(&[sig[..].to_vec()]);
 		}
 

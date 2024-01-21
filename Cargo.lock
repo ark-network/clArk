@@ -60,11 +60,13 @@ dependencies = [
  "bitcoin 0.30.0",
  "ciborium",
  "lazy_static",
+ "log",
  "miniscript",
  "prost",
  "serde",
  "sled",
  "tokio",
+ "tokio-stream",
  "tonic",
 ]
 

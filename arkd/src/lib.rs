@@ -10,14 +10,15 @@ mod round;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
 use bitcoin::{Amount, Address};
 use bitcoin::bip32;
-use bitcoin::secp256k1::{self, PublicKey, SecretKey};
+use bitcoin::secp256k1::{self, KeyPair, PublicKey};
+use tokio::sync::Mutex;
 
 use round::{RoundEvent, RoundInput};
 
@@ -36,6 +37,10 @@ pub struct Config {
 
 	pub round_interval: Duration,
 	pub round_submit_time: Duration,
+	pub round_sign_time: Duration,
+	pub nb_round_nonces: usize,
+	pub vtxo_expiry_blocks: u32,
+	pub vtxo_exit_timeout_blocks: u32,
 }
 
 // NB some random defaults to have something
@@ -47,6 +52,10 @@ impl Default for Config {
 			datadir: "./".parse().unwrap(),
 			round_interval: Duration::from_secs(10),
 			round_submit_time: Duration::from_secs(2),
+			round_sign_time: Duration::from_secs(2),
+			nb_round_nonces: 100,
+			vtxo_expiry_blocks: 1 * 24 * 6, // 1 day
+			vtxo_exit_timeout_blocks: 2 * 6, // 2 hrs
 		}
 	}
 }
@@ -54,8 +63,7 @@ impl Default for Config {
 pub struct App {
 	config: Config,
 	db: database::Db,
-	master_key: SecretKey,
-	master_pubkey: PublicKey,
+	master_key: KeyPair,
 	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
 	// electrum: electrum_client::Client,
@@ -83,9 +91,8 @@ impl App {
 		let master_key = {
 			let xpriv = bip32::ExtendedPrivKey::new_master(config.network, &seed).unwrap();
 			let deriv = bip32::DerivationPath::from_str("m/0").unwrap();
-			xpriv.derive_priv(&SECP, &deriv).unwrap().private_key
+			KeyPair::from_secret_key(&SECP, &xpriv.derive_priv(&SECP, &deriv).unwrap().private_key)
 		};
-		let master_pubkey = master_key.public_key(&SECP);
 
 		let wallet = {
 			let db_path = config.datadir.join("wallet_db");
@@ -94,9 +101,6 @@ impl App {
 				DB_MAGIC.as_bytes(), db_path,
 			)?;
 
-			// let desc = miniscript::Descriptor::Tr(
-			// 	miniscript::descriptor::Tr::new(master_key.clone(), None)
-			// );
 			let desc = format!("tr({})", master_key.display_secret());
 			bdk::Wallet::new_or_load(&desc, None, db, config.network)
 				.context("failed to create or load bdk wallet")?
@@ -114,7 +118,6 @@ impl App {
 			config: config,
 			db: db,
 			master_key: master_key,
-			master_pubkey: master_pubkey,
 			wallet: Mutex::new(wallet),
 			bitcoind: bitcoind,
 
@@ -136,7 +139,7 @@ impl App {
 	}
 
 	pub fn onchain_address(self: &Arc<Self>) -> anyhow::Result<Address> {
-		let mut wallet = self.wallet.lock().unwrap();
+		let mut wallet = self.wallet.blocking_lock();
 		let ret = wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address;
 		// should always return the same address
 		debug_assert_eq!(ret, wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address);
@@ -144,15 +147,15 @@ impl App {
 	}
 
 	pub fn sync_onchain_wallet(self: &Arc<Self>) -> anyhow::Result<Amount> {
-		let mut wallet = self.wallet.lock().unwrap();
+		let mut wallet = self.wallet.blocking_lock();
 		let prev_tip = wallet.latest_checkpoint();
 		// let keychain_spks = self.wallet.spks_of_all_keychains();
 
-        let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
-        while let Some(em) = emitter.next_block()? {
+		let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
+		while let Some(em) = emitter.next_block()? {
 			wallet.apply_block_connected_to(&em.block, em.block_height(), em.connected_to())?;
 			wallet.commit()?;
-        }
+		}
 
 		// mempool
 		let mempool = emitter.mempool()?;
@@ -182,6 +185,6 @@ impl App {
 	}
 
 	pub fn cosign_onboard(self: &Arc<Self>, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {
-		ark::onboard::new_asp(&user_part, self.master_key)
+		ark::onboard::new_asp(&user_part, &self.master_key)
 	}
 }

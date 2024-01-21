@@ -1,18 +1,27 @@
 
 
 pub mod connectors;
+pub mod forfeit;
 pub mod musig;
 pub mod onboard;
+pub mod tree;
 mod util;
 
 
 use std::{fmt, io};
 
-use bitcoin::{OutPoint, Txid};
+use bitcoin::{Amount, OutPoint, Txid};
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, schnorr};
+use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct Destination {
+	pub pubkey: PublicKey,
+	#[serde(with = "bitcoin::amount::serde::as_sat")]
+	pub amount: Amount,
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VtxoId([u8; 36]);
@@ -23,6 +32,16 @@ impl VtxoId {
 		ret[0..32].copy_from_slice(&utxo.txid[..]);
 		ret[32..].copy_from_slice(&utxo.vout.to_le_bytes());
 		VtxoId(ret)
+	}
+
+	pub fn from_slice(b: &[u8]) -> Result<VtxoId, &'static str> {
+		if b.len() == 36 {
+			let mut ret = [0u8; 36];
+			ret[..].copy_from_slice(&b[0..36]);
+			Ok(Self(ret))
+		} else {
+			Err("invalid vtxo id length")
+		}
 	}
 
 	pub fn utxo(self) -> OutPoint {
@@ -74,9 +93,39 @@ impl Vtxo {
 		}
 	}
 
+	pub fn amount(&self) -> Amount {
+		match self {
+			Vtxo::Onboard { spec, .. } => spec.amount,
+		}
+	}
+
 	pub fn is_onboard(&self) -> bool {
 		match self {
 			Vtxo::Onboard { .. } => true,
+		}
+	}
+
+	pub fn user_pubkey(&self) -> PublicKey {
+		match self {
+			Vtxo::Onboard { spec, .. } => spec.user_key,
+		}
+	}
+
+	pub fn asp_pubkey(&self) -> PublicKey {
+		match self {
+			Vtxo::Onboard { spec, .. } => spec.asp_pubkey,
+		}
+	}
+
+	pub fn exit_delta(&self) -> u16 {
+		match self {
+			Vtxo::Onboard { spec, .. } => spec.exit_delta,
+		}
+	}
+
+	pub fn combined_pubkey(&self) -> XOnlyPublicKey {
+		match self {
+			Vtxo::Onboard { spec, .. } => spec.combined_pubkey(),
 		}
 	}
 

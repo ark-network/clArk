@@ -13,13 +13,14 @@ service ArkService {
 	// * ARK ROUND INTERACTIONS *
 
 	rpc SubscribeRounds(Empty) returns (stream RoundEvent) {}
-
-
+	rpc SubmitPayment(SubmitPaymentRequest) returns (Empty) {}
+	rpc ProvideSignatures(RoundSignatures) returns (Empty) {}
 }
 
 message ArkInfo {
 	bytes pubkey = 1;
 	bytes xonly_pubkey = 2;
+	uint32 nb_round_nonces = 3;
 }
 
 message OnboardCosignRequest {
@@ -35,19 +36,57 @@ message RegisterOnboardVtxoRequest {
 	bytes vtxo = 1;
 }
 
-message NewRoundEvent {
-	bytes round_id = 1;
+message NewRound {
+	uint64 round_id = 1;
 }
 
-message FakeRoundEvent {
-	bytes round_ids = 1;
+message ForfeitNonces {
+	bytes input_vtxo_id = 1;
+	repeated bytes pub_nonces = 2;
+}
+
+message RoundProposal {
+	uint64 round_id = 1;
+	bytes vtxos_spec = 2;
+	bytes round_tx = 3;
+	repeated bytes vtxos_signers = 4;
+	repeated bytes vtxos_agg_nonces = 5;
+	repeated ForfeitNonces forfeit_nonces = 6;
 }
 
 message RoundEvent {
 	oneof event {
-		NewRoundEvent new_round = 1;
-		FakeRoundEvent fake_round = 2;
+		NewRound new_round = 1;
+		RoundProposal round_proposal = 2;
 	}
+}
+
+message Destination {
+	uint64 amount = 1;
+	bytes public_key = 2;
+}
+
+message SubmitPaymentRequest {
+	//TODO(stevenroose) add proof of vtxo ownership
+	repeated bytes input_vtxo_ids = 1;
+	repeated Destination destinations = 2;
+	bytes cosign_pubkey = 3;
+	repeated bytes public_nonces = 4;
+}
+
+message ForfeitSignatures {
+	bytes input_vtxo_id = 1;
+	repeated bytes signatures = 2;
+}
+
+message VtxoSignatures {
+	bytes pubkey = 1;
+	repeated bytes signatures = 2;
+}
+
+message RoundSignatures {
+	repeated ForfeitSignatures forfeit = 1;
+	VtxoSignatures vtxo = 2;
 }
 
 

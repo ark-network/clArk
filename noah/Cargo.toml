@@ -12,6 +12,7 @@ arkd-rpc-client = { path = "../arkd-rpc-client" }
 
 anyhow.workspace = true
 lazy_static.workspace = true
+log.workspace = true
 serde.workspace = true
 ciborium.workspace = true
 bitcoin.workspace = true
@@ -24,5 +25,6 @@ bdk_bitcoind_rpc.workspace = true
 prost.workspace = true
 tonic.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 
 sled = "0.34.7"

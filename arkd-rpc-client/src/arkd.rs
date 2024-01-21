@@ -5,6 +5,8 @@ pub struct ArkInfo {
     pub pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub xonly_pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub nb_round_nonces: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -27,15 +29,33 @@ pub struct RegisterOnboardVtxoRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NewRoundEvent {
-    #[prost(bytes = "vec", tag = "1")]
-    pub round_id: ::prost::alloc::vec::Vec<u8>,
+pub struct NewRound {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FakeRoundEvent {
+pub struct ForfeitNonces {
     #[prost(bytes = "vec", tag = "1")]
-    pub round_ids: ::prost::alloc::vec::Vec<u8>,
+    pub input_vtxo_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundProposal {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub vtxos_spec: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub vtxos_signers: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "5")]
+    pub vtxos_agg_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "6")]
+    pub forfeit_nonces: ::prost::alloc::vec::Vec<ForfeitNonces>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -49,10 +69,55 @@ pub mod round_event {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Event {
         #[prost(message, tag = "1")]
-        NewRound(super::NewRoundEvent),
+        NewRound(super::NewRound),
         #[prost(message, tag = "2")]
-        FakeRound(super::FakeRoundEvent),
+        RoundProposal(super::RoundProposal),
     }
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Destination {
+    #[prost(uint64, tag = "1")]
+    pub amount: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub public_key: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SubmitPaymentRequest {
+    /// TODO(stevenroose) add proof of vtxo ownership
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub input_vtxo_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(message, repeated, tag = "2")]
+    pub destinations: ::prost::alloc::vec::Vec<Destination>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub cosign_pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "4")]
+    pub public_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ForfeitSignatures {
+    #[prost(bytes = "vec", tag = "1")]
+    pub input_vtxo_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VtxoSignatures {
+    #[prost(bytes = "vec", tag = "1")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundSignatures {
+    #[prost(message, repeated, tag = "1")]
+    pub forfeit: ::prost::alloc::vec::Vec<ForfeitSignatures>,
+    #[prost(message, optional, tag = "2")]
+    pub vtxo: ::core::option::Option<VtxoSignatures>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -236,6 +301,50 @@ pub mod ark_service_client {
             req.extensions_mut()
                 .insert(GrpcMethod::new("arkd.ArkService", "SubscribeRounds"));
             self.inner.server_streaming(req, path, codec).await
+        }
+        pub async fn submit_payment(
+            &mut self,
+            request: impl tonic::IntoRequest<super::SubmitPaymentRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/SubmitPayment",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "SubmitPayment"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn provide_signatures(
+            &mut self,
+            request: impl tonic::IntoRequest<super::RoundSignatures>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/ProvideSignatures",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "ProvideSignatures"));
+            self.inner.unary(req, path, codec).await
         }
     }
 }

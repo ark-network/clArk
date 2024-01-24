@@ -23,9 +23,17 @@ pub struct OnboardCosignResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RegisterOnboardVtxoRequest {
+pub struct RoundId {
     #[prost(bytes = "vec", tag = "1")]
-    pub vtxo: ::prost::alloc::vec::Vec<u8>,
+    pub txid: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundInfo {
+    #[prost(bytes = "vec", tag = "1")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -99,7 +107,7 @@ pub struct Destination {
 pub struct SubmitPaymentRequest {
     /// TODO(stevenroose) add proof of vtxo ownership
     #[prost(bytes = "vec", repeated, tag = "1")]
-    pub input_vtxo_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    pub input_vtxos: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(message, repeated, tag = "2")]
     pub destinations: ::prost::alloc::vec::Vec<Destination>,
     #[prost(bytes = "vec", tag = "3")]
@@ -154,10 +162,10 @@ pub mod ark_service_server {
             tonic::Response<super::OnboardCosignResponse>,
             tonic::Status,
         >;
-        async fn register_onboard_vtxo(
+        async fn get_round(
             &self,
-            request: tonic::Request<super::RegisterOnboardVtxoRequest>,
-        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+            request: tonic::Request<super::RoundId>,
+        ) -> std::result::Result<tonic::Response<super::RoundInfo>, tonic::Status>;
         /// Server streaming response type for the SubscribeRounds method.
         type SubscribeRoundsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::RoundEvent, tonic::Status>,
@@ -351,26 +359,23 @@ pub mod ark_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/arkd.ArkService/RegisterOnboardVtxo" => {
+                "/arkd.ArkService/GetRound" => {
                     #[allow(non_camel_case_types)]
-                    struct RegisterOnboardVtxoSvc<T: ArkService>(pub Arc<T>);
-                    impl<
-                        T: ArkService,
-                    > tonic::server::UnaryService<super::RegisterOnboardVtxoRequest>
-                    for RegisterOnboardVtxoSvc<T> {
-                        type Response = super::Empty;
+                    struct GetRoundSvc<T: ArkService>(pub Arc<T>);
+                    impl<T: ArkService> tonic::server::UnaryService<super::RoundId>
+                    for GetRoundSvc<T> {
+                        type Response = super::RoundInfo;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
                             tonic::Status,
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::RegisterOnboardVtxoRequest>,
+                            request: tonic::Request<super::RoundId>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ArkService>::register_onboard_vtxo(&inner, request)
-                                    .await
+                                <T as ArkService>::get_round(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -382,7 +387,7 @@ pub mod ark_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
-                        let method = RegisterOnboardVtxoSvc(inner);
+                        let method = GetRoundSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

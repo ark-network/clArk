@@ -17,7 +17,7 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 		lock_time: bitcoin::absolute::LockTime::ZERO,
 		input: vec![
 			TxIn {
-				previous_output: vtxo.utxo(),
+				previous_output: vtxo.point(),
 				sequence: Sequence::ZERO,
 				script_sig: ScriptBuf::new(),
 				witness: Witness::new(),

@@ -23,9 +23,17 @@ pub struct OnboardCosignResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RegisterOnboardVtxoRequest {
+pub struct RoundId {
     #[prost(bytes = "vec", tag = "1")]
-    pub vtxo: ::prost::alloc::vec::Vec<u8>,
+    pub txid: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundInfo {
+    #[prost(bytes = "vec", tag = "1")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -99,7 +107,7 @@ pub struct Destination {
 pub struct SubmitPaymentRequest {
     /// TODO(stevenroose) add proof of vtxo ownership
     #[prost(bytes = "vec", repeated, tag = "1")]
-    pub input_vtxo_ids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    pub input_vtxos: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(message, repeated, tag = "2")]
     pub destinations: ::prost::alloc::vec::Vec<Destination>,
     #[prost(bytes = "vec", tag = "3")]
@@ -269,10 +277,10 @@ pub mod ark_service_client {
                 .insert(GrpcMethod::new("arkd.ArkService", "RequestOnboardCosign"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn register_onboard_vtxo(
+        pub async fn get_round(
             &mut self,
-            request: impl tonic::IntoRequest<super::RegisterOnboardVtxoRequest>,
-        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            request: impl tonic::IntoRequest<super::RoundId>,
+        ) -> std::result::Result<tonic::Response<super::RoundInfo>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -283,12 +291,9 @@ pub mod ark_service_client {
                     )
                 })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/arkd.ArkService/RegisterOnboardVtxo",
-            );
+            let path = http::uri::PathAndQuery::from_static("/arkd.ArkService/GetRound");
             let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("arkd.ArkService", "RegisterOnboardVtxo"));
+            req.extensions_mut().insert(GrpcMethod::new("arkd.ArkService", "GetRound"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn subscribe_rounds(

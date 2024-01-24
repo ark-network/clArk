@@ -13,7 +13,7 @@ use std::{fmt, io};
 
 use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
+use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -27,16 +27,13 @@ pub struct Destination {
 pub struct VtxoId([u8; 36]);
 
 impl VtxoId {
-	// pub fn new(utxo: OutPoint) -> VtxoId {
-	// }
-
 	pub fn from_slice(b: &[u8]) -> Result<VtxoId, &'static str> {
 		if b.len() == 36 {
 			let mut ret = [0u8; 36];
 			ret[..].copy_from_slice(&b[0..36]);
 			Ok(Self(ret))
 		} else {
-			Err("invalid vtxo id length")
+			Err("invalid vtxo id length; must be 36 bytes")
 		}
 	}
 
@@ -97,13 +94,16 @@ impl VtxoSpec {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum Vtxo {
 	Onboard {
-		utxo: OutPoint,
 		spec: VtxoSpec,
+		/// The on-chain utxo of the onboard tx.
+		utxo: OutPoint,
 		exit_tx_signature: schnorr::Signature,
 	},
 	Round {
-		utxo: OutPoint,
 		spec: VtxoSpec,
+		/// The on-chain utxo of the vtxo tree.
+		utxo: OutPoint,
+		leaf_idx: usize,
 		exit_branch: Vec<Transaction>,
 	},
 }
@@ -111,14 +111,18 @@ pub enum Vtxo {
 impl Vtxo {
 	/// This is the same as [utxo] but encoded as a byte array.
 	pub fn id(&self) -> VtxoId {
-		//TODO(stevenroose) this is not a unique id! fix this
-		self.utxo().into()
+		self.point().into()
 	}
 
-	pub fn utxo(&self) -> OutPoint {
+	/// The outpoint from which to build forfeit or OOR txs.
+	///
+	/// This can be an on-chain utxo or an off-chain vtxo.
+	pub fn point(&self) -> OutPoint {
 		match self {
 			Vtxo::Onboard { utxo, .. } => *utxo,
-			Vtxo::Round { utxo, .. } => *utxo,
+			Vtxo::Round { exit_branch, .. } => {
+				OutPoint::new(exit_branch.last().unwrap().txid(), 0).into()
+			},
 		}
 	}
 

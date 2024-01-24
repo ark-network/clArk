@@ -8,7 +8,7 @@ package arkd;
 service ArkService {
 	rpc GetArkInfo(Empty) returns (ArkInfo) {}
 	rpc RequestOnboardCosign(OnboardCosignRequest) returns (OnboardCosignResponse) {}
-	rpc RegisterOnboardVtxo(RegisterOnboardVtxoRequest) returns (Empty) {}
+	rpc GetRound(RoundId) returns (RoundInfo) {}
 
 	// * ARK ROUND INTERACTIONS *
 
@@ -32,8 +32,13 @@ message OnboardCosignResponse {
 	bytes asp_part = 1;
 }
 
-message RegisterOnboardVtxoRequest {
-	bytes vtxo = 1;
+message RoundId {
+	bytes txid = 1;
+}
+
+message RoundInfo {
+	bytes round_tx = 1;
+	bytes signed_vtxos = 2;
 }
 
 message RoundStart {
@@ -75,7 +80,7 @@ message Destination {
 
 message SubmitPaymentRequest {
 	//TODO(stevenroose) add proof of vtxo ownership
-	repeated bytes input_vtxo_ids = 1;
+	repeated bytes input_vtxos = 1;
 	repeated Destination destinations = 2;
 	bytes cosign_pubkey = 3;
 	repeated bytes public_nonces = 4;

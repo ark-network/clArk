@@ -5,7 +5,7 @@ use anyhow::{bail, Context};
 use bitcoin::consensus::encode;
 use sled::transaction as tx;
 
-use ark::Vtxo;
+use ark::{Vtxo, VtxoId};
 
 const VTXO_TREE: &str = "noah_vtxos";
 
@@ -42,5 +42,9 @@ impl Db {
 			let (_key, val) = v?;
 			Ok(Vtxo::decode(&val)?)
 		}).collect()
+	}
+
+	pub fn remove_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<Vtxo>> {
+		Ok(self.db.open_tree(VTXO_TREE)?.remove(&id)?.map(|b| Vtxo::decode(&b)).transpose()?)
 	}
 }

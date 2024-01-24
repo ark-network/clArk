@@ -162,11 +162,11 @@ impl Wallet {
 
 	pub async fn send_payment(&mut self, destination: Destination) -> anyhow::Result<()> {
 		// Prepare the payment.
-		let vtxos = self.db.get_all_vtxos()?;
-		let vtxo_ids = vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();
+		let input_vtxos = self.db.get_all_vtxos()?;
+		let vtxo_ids = input_vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
 		let change = {
-			let sum = vtxos.iter().map(|v| v.amount()).sum::<Amount>();
+			let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 			if sum < destination.amount {
 				bail!("Balance too low");
 			} else if sum == destination.amount {
@@ -208,7 +208,7 @@ impl Wallet {
 			// The round has now started. We can submit our payment.
 			self.asp.submit_payment(rpc::SubmitPaymentRequest {
 				cosign_pubkey: cosign_key.public_key().serialize().to_vec(),
-				input_vtxo_ids: vtxos.iter().map(|v| v.id().bytes().to_vec()).collect(),
+				input_vtxos: input_vtxos.iter().map(|v| v.encode()).collect(),
 				destinations: Some(&destination).iter().chain(change.as_ref().iter()).map(|d| {
 					rpc::Destination {
 						amount: d.amount.to_sat(),
@@ -272,7 +272,7 @@ impl Wallet {
 			let connectors = ConnectorChain::new(
 				forfeit_nonces.len(), conns_utxo, self.ark_info.asp_pubkey,
 			);
-			let forfeit_signatures = vtxos.iter().map(|v| {
+			let forfeit_signatures = input_vtxos.iter().map(|v| {
 				let sigs = connectors.connectors().enumerate().map(|(i, conn)| {
 					let (sighash, _tx) = ark::forfeit::forfeit_sighash(v, conn);
 					let asp_nonce = forfeit_nonces.get(&v.id())
@@ -357,7 +357,6 @@ impl Wallet {
 				};
 				let exit_branch = vtxos.exit_branch(leaf_idx).unwrap();
 				let vtxo = Vtxo::Round {
-					utxo: vtxos_utxo,
 					spec: VtxoSpec {
 						user_pubkey: change.pubkey,
 						asp_pubkey: self.ark_info.asp_pubkey,
@@ -365,11 +364,18 @@ impl Wallet {
 						exit_delta: vtxos.spec().exit_delta,
 						amount: change.amount,
 					},
+					utxo: vtxos_utxo,
+					leaf_idx: leaf_idx,
 					exit_branch: exit_branch,
 				};
 				self.db.store_vtxo(vtxo).context("failed to store vtxo");
 			} else {
 				info!("We used up all our money..");
+			}
+
+			// And remove the input vtxos.
+			for v in input_vtxos {
+				self.db.remove_vtxo(v.id()).context("failed to drop input vtxo")?;
 			}
 
 			info!("Finished payment");

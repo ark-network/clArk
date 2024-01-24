@@ -2,20 +2,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::iter;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use bitcoin::{Amount, OutPoint, Transaction};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 
-use ark::{musig, Destination, VtxoId};
+use ark::{musig, Destination, Vtxo, VtxoId};
 use ark::connectors::ConnectorChain;
 use ark::tree::signed::{SignedVtxoTree, VtxoTreeSpec};
 
 use crate::App;
-use crate::database::StoredVtxo;
+use crate::database::ForfeitVtxo;
 
 #[derive(Debug, Clone)]
 pub enum RoundEvent {
@@ -40,7 +39,7 @@ pub enum RoundEvent {
 #[derive(Debug)]
 pub enum RoundInput {
 	RegisterPayment {
-		inputs: Vec<StoredVtxo>,
+		inputs: Vec<Vtxo>,
 		outputs: Vec<Destination>,
 		cosign_pubkey: PublicKey,
 		public_nonces: Vec<musig::MusigPubNonce>,
@@ -52,7 +51,7 @@ pub enum RoundInput {
 	},
 }
 
-fn validate_payment(inputs: &[StoredVtxo], outputs: &[Destination]) -> bool {
+fn validate_payment(inputs: &[Vtxo], outputs: &[Destination]) -> bool {
 	let mut in_set = HashSet::with_capacity(inputs.len());
 	let mut in_sum = Amount::ZERO;
 	for input in inputs {
@@ -92,7 +91,7 @@ pub async fn run_round_scheduler(
 		// In this loop we will try to finish the round and make new attempts.
 		let mut allowed_inputs = HashSet::new();
 		'attempt: loop {
-			let mut all_inputs = Vec::<StoredVtxo>::new();
+			let mut all_inputs = Vec::<Vtxo>::new();
 			let mut all_outputs = Vec::<Destination>::new();
 			let mut cosigners = HashSet::<PublicKey>::new();
 			cosigners.insert(app.master_key.public_key());
@@ -116,6 +115,8 @@ pub async fn run_round_scheduler(
 									continue 'receive;
 								}
 							}
+
+							//TODO(stevenroose) check that vtxos exist!
 
 							if !validate_payment(&inputs, &outputs) {
 								warn!("User submitted bad payment: ins {:?}; outs {:?}",
@@ -270,7 +271,7 @@ pub async fn run_round_scheduler(
 			);
 			for vtxo in &all_inputs {
 				if let Some((user_nonces, partial_sigs)) = forfeit_part_sigs.get(&vtxo.id()) {
-					let vtxo = vtxo.clone().into_vtxo();
+					let vtxo = vtxo.clone();
 					let sec_nonces = forfeit_sec_nonces.remove(&vtxo.id()).unwrap().into_iter();
 					let pub_nonces = forfeit_pub_nonces.get(&vtxo.id()).unwrap();
 					let connectors = connectors.connectors();
@@ -288,7 +289,7 @@ pub async fn run_round_scheduler(
 							sighash.to_byte_array(),
 							Some(&[partial_sigs[i]]),
 						);
-						sigs.push(sig);
+						sigs.push(sig.expect("should be signed"));
 					}
 					forfeit_sigs.insert(vtxo.id(), sigs);
 				} else {
@@ -337,12 +338,23 @@ pub async fn run_round_scheduler(
 			})?;
 
 
+			// Store forfeit txs and round info in database.
+			let round_id = round_tx.txid();
+			for vtxo in all_inputs {
+				let forfeit_sigs = forfeit_sigs.remove(&vtxo.id()).unwrap();
+				let point = vtxo.point();
+				let ff = match vtxo {
+					Vtxo::Onboard { utxo, spec, .. } => {
+						ForfeitVtxo::Onboard { spec, utxo, forfeit_sigs }
+					},
+					Vtxo::Round { utxo, spec, leaf_idx, .. } => {
+						ForfeitVtxo::Round { spec, round_id, point, leaf_idx, forfeit_sigs }
+					},
+				};
+				app.db.store_forfeit_vtxo(ff)?;
+			}
 
-
-
-
-			//TODO(stevenroose) store forfeits in db
-			//TODO(stevenroose) store vtxo tree in db
+			app.db.store_round(round_tx, signed_vtxos)?;
 
 			break 'attempt;
 		}

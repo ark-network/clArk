@@ -3,16 +3,18 @@ use std::io;
 use std::path::Path;
 
 use anyhow::{bail, Context};
-use bitcoin::{Amount, OutPoint};
+use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoin::secp256k1::schnorr;
 use sled::transaction as tx;
 
-use ark::{Vtxo, VtxoId};
+use ark::{Vtxo, VtxoId, VtxoSpec};
+use ark::tree::signed::SignedVtxoTree;
 
 
 // TREE KEYS
 
-const VTXO_TREE: &str = "noah_vtxos";
+const FORFEIT_VTXO_TREE: &str = "forfeited_vtxos";
+const ROUND_TREE: &str = "rounds";
 
 
 // ENTRY KEYS
@@ -25,34 +27,35 @@ pub struct Db {
 	db: sled::Db,
 }
 
+/// A vtxo that has been forfeited and is now ours.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum StoredVtxo {
+pub enum ForfeitVtxo {
 	Onboard {
-		#[serde(skip)]
+		spec: VtxoSpec,
 		utxo: OutPoint,
-		spec: ark::VtxoSpec,
-		exit_tx_signature: schnorr::Signature,
-	}
+		forfeit_sigs: Vec<schnorr::Signature>,
+	},
+	Round {
+		spec: VtxoSpec,
+		round_id: Txid,
+		point: OutPoint,
+		leaf_idx: usize,
+		forfeit_sigs: Vec<schnorr::Signature>,
+	},
 }
 
-impl StoredVtxo {
+impl ForfeitVtxo {
 	pub fn id(&self) -> VtxoId {
 		match self {
-			StoredVtxo::Onboard { utxo, .. } => (*utxo).into(),
+			Self::Onboard { utxo, .. } => (*utxo).into(),
+			Self::Round { point, .. } => (*point).into(),
 		}
 	}
 
 	pub fn amount(&self) -> Amount {
 		match self {
-			StoredVtxo::Onboard { spec, .. } => spec.amount,
-		}
-	}
-
-	pub fn into_vtxo(self) -> Vtxo {
-		match self {
-			StoredVtxo::Onboard { utxo, spec, exit_tx_signature } => {
-				Vtxo::Onboard { utxo, spec, exit_tx_signature }
-			}
+			Self::Onboard { spec, .. } => spec.amount,
+			Self::Round { spec, .. } => spec.amount,
 		}
 	}
 
@@ -62,14 +65,33 @@ impl StoredVtxo {
 		buf
 	}
 
-	fn decode(id: VtxoId, bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
-		let mut ret = ciborium::from_reader(bytes)?;
-		match ret {
-			StoredVtxo::Onboard { ref mut utxo, .. } => *utxo = id.utxo(),
-		}
-		Ok(ret)
+	fn decode(bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
+		ciborium::from_reader(bytes)
 	}
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StoredRound {
+	pub tx: Transaction,
+	pub signed_tree: SignedVtxoTree,
+}
+
+impl StoredRound {
+	pub fn id(&self) -> Txid {
+		self.tx.txid()
+	}
+
+	fn encode(&self) -> Vec<u8> {
+		let mut buf = Vec::new();
+		ciborium::into_writer(self, &mut buf).unwrap();
+		buf
+	}
+
+	fn decode(bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
+		ciborium::from_reader(bytes)
+	}
+}
+
 
 impl Db {
 	pub fn open(path: &Path) -> anyhow::Result<Db> {
@@ -101,24 +123,47 @@ impl Db {
 		})?)
 	}
 
-	pub fn get_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<StoredVtxo>> {
-		Ok(if let Some(bytes) = self.db.open_tree(VTXO_TREE)?.get(id)? {
-			Some(StoredVtxo::decode(id, &bytes).context("db corruption")?)
-		} else {
-			None
-		})
-	}
-
-	pub fn register_onboard_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
-		let id = vtxo.id();
-		let utxo = vtxo.utxo();
-		let stored = match vtxo {
-			Vtxo::Onboard { spec, exit_tx_signature, .. } => StoredVtxo::Onboard {
-				utxo: utxo, spec, exit_tx_signature,
-			},
-			_ => bail!("vtxo was not an onboard vtxo"),
+	pub fn store_round(&self, round_tx: Transaction, vtxos: SignedVtxoTree) -> anyhow::Result<()> {
+		let round = StoredRound {
+			tx: round_tx,
+			signed_tree: vtxos,
 		};
-		self.db.open_tree(VTXO_TREE)?.insert(id, stored.encode())?;
+		if self.db.open_tree(ROUND_TREE)?.insert(round.id(), round.encode())?.is_some() {
+			warn!("Round with id {} already present!", round.id());
+		}
 		Ok(())
 	}
+
+	pub fn get_round(&self, id: Txid) -> anyhow::Result<Option<StoredRound>> {
+		Ok(self.db.open_tree(ROUND_TREE)?.get(id)?.map(|b| {
+			StoredRound::decode(&b).expect("corrupt db")
+		}))
+	}
+
+	pub fn store_forfeit_vtxo(&self, vtxo: ForfeitVtxo) -> anyhow::Result<()> {
+		if self.db.open_tree(FORFEIT_VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?.is_some() {
+			warn!("Forfeit vtxo with id {} already present!", vtxo.id());
+		}
+		Ok(())
+	}
+
+	// pub fn get_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<StoredVtxo>> {
+	// 	Ok(if let Some(bytes) = self.db.open_tree(VTXO_TREE)?.get(id)? {
+	// 		Some(StoredVtxo::decode(&bytes).context("db corruption")?)
+	// 	} else {
+	// 		None
+	// 	})
+	// }
+
+	// pub fn register_onboard_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
+	// 	let id = vtxo.id();
+	// 	let stored = match vtxo {
+	// 		Vtxo::Onboard { spec, exit_tx_signature, .. } => StoredVtxo::Onboard {
+	// 			utxo: id.utxo(), spec, exit_tx_signature,
+	// 		},
+	// 		_ => bail!("vtxo was not an onboard vtxo"),
+	// 	};
+	// 	self.db.open_tree(VTXO_TREE)?.insert(id, stored.encode())?;
+	// 	Ok(())
+	// }
 }

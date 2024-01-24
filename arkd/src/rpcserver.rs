@@ -1,7 +1,8 @@
 
 use std::sync::Arc;
 
-use bitcoin::Amount;
+use bitcoin::{Amount, Txid};
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use tokio_stream::{Stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
@@ -10,7 +11,7 @@ use ark::{musig, Destination, Vtxo, VtxoId};
 
 use crate::App;
 use crate::rpc;
-use crate::round::{self, RoundEvent, RoundInput};
+use crate::round::{RoundEvent, RoundInput};
 
 macro_rules! badarg {
 	($($arg:tt)*) => {{
@@ -72,14 +73,19 @@ impl rpc::ArkService for Arc<App> {
 		}))
 	}
 
-	async fn register_onboard_vtxo(
+	async fn get_round(
 		&self,
-		req: tonic::Request<rpc::RegisterOnboardVtxoRequest>,
-	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
-		let vtxo = Vtxo::decode(&req.into_inner().vtxo).map_err(|e| badarg!("invalid vtxo: {}", e))?;
-		//TODO(stevenroose) do sanity checks like to see if tx confirmed etc
-		self.db.register_onboard_vtxo(vtxo).to_status()?;
-		Ok(tonic::Response::new(rpc::Empty {}))
+		req: tonic::Request<rpc::RoundId>,
+	) -> Result<tonic::Response<rpc::RoundInfo>, tonic::Status> {
+		let txid = Txid::from_slice(&req.into_inner().txid)
+			.map_err(|e| badarg!("invalid txid: {}", e))?;
+		let ret = self.db.get_round(txid)
+			.map_err(|e| internal!("db error: {}", e))?
+			.ok_or_else(|| not_found!("round with txid {} not found", txid))?;
+		Ok(tonic::Response::new(rpc::RoundInfo {
+			round_tx: bitcoin::consensus::serialize(&ret.tx),
+			signed_vtxos: ret.signed_tree.encode(),
+		}))
 	}
 
 	type SubscribeRoundsStream = Box<
@@ -137,14 +143,8 @@ impl rpc::ArkService for Arc<App> {
 	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
 		let req = req.into_inner();
 
-		let inputs =  req.input_vtxo_ids.into_iter().map(|id| {
-			let id = VtxoId::from_slice(&id)
-				.map_err(|e| badarg!("invalid vtxo id: {}", e))?;
-			match self.db.get_vtxo(id) {
-				Err(e) => Err(internal!("db error: {}", e)),
-				Ok(None) => Err(not_found!("vtxo not found: {}", id)),
-				Ok(Some(v)) => Ok(v)
-			}
+		let inputs =  req.input_vtxos.into_iter().map(|vtxo| {
+			Ok(Vtxo::decode(&vtxo).map_err(|e| badarg!("invalid vtxo: {}", e))?)
 		}).collect::<Result<_, tonic::Status>>()?;
 
 		let outputs = req.destinations.into_iter().map(|d| {

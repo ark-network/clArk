@@ -13,7 +13,6 @@ use bitcoin::secp256k1::{self, schnorr, KeyPair, PublicKey, SecretKey, XOnlyPubl
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::{TaprootBuilder};
 use bitcoin::opcodes;
-use serde::{Deserialize, Serialize};
 
 use crate::{musig, util, Destination};
 use crate::tree::Tree;
@@ -31,11 +30,11 @@ const NODE4_TX_SIZE: u64 = 0;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VtxoTreeSpec {
-	cosigners: Vec<PublicKey>,
-	destinations: Vec<Destination>,
-	asp_key: PublicKey,
-	expiry_height: u32,
-	exit_timeout_blocks: u32,
+	pub cosigners: Vec<PublicKey>,
+	pub destinations: Vec<Destination>,
+	pub asp_key: PublicKey,
+	pub expiry_height: u32,
+	pub exit_delta: u16,
 
 	#[serde(skip)]
 	cosign_key_agg: Option<musig::MusigKeyAggCache>,
@@ -47,14 +46,14 @@ impl VtxoTreeSpec {
 		destinations: Vec<Destination>,
 		asp_key: PublicKey,
 		expiry_height: u32,
-		exit_timeout_blocks: u32,
+		exit_delta: u16,
 	) -> VtxoTreeSpec {
 		VtxoTreeSpec {
 			cosigners: cosigners_with_asp,
 			destinations: destinations,
 			asp_key: asp_key,
 			expiry_height: expiry_height,
-			exit_timeout_blocks: exit_timeout_blocks,
+			exit_delta: exit_delta,
 			cosign_key_agg: None,
 		}
 	}
@@ -112,6 +111,16 @@ impl VtxoTreeSpec {
 		Amount::from_sat(dest_sum + leaf_extra + nodes_fee)
 	}
 
+	pub fn find_leaf_idxs<'a>(&'a self, dest: &'a Destination) -> impl Iterator<Item = usize> + 'a {
+		self.destinations.iter().enumerate().filter_map(move |(i, d)| {
+			if d == dest {
+				Some(i)
+			} else {
+				None
+			}
+		})
+	}
+
 	/// The expiry clause hidden in the node taproot as only script.
 	fn expiry_clause(&self) -> ScriptBuf {
 		let pk = self.asp_key.x_only_public_key().0;
@@ -147,7 +156,7 @@ impl VtxoTreeSpec {
 
 	fn exit_clause(&self, destination: &Destination) -> ScriptBuf {
 		let pk = destination.pubkey.x_only_public_key().0;
-		util::delayed_sign(self.exit_timeout_blocks.try_into().unwrap(), pk)
+		util::delayed_sign(self.exit_delta.try_into().unwrap(), pk)
 	}
 
 	fn leaf_spk(&self, destination: &Destination) -> ScriptBuf {
@@ -178,7 +187,7 @@ impl VtxoTreeSpec {
 		}
 	}
 
-	pub fn build_tree(&self, utxo: OutPoint) -> Tree<Transaction> {
+	pub fn build_unsigned_tree(&self, utxo: OutPoint) -> Tree<Transaction> {
 		let leaves = self.destinations.iter().map(|dest| self.leaf_tx(dest));
 		let mut tree = Tree::new(leaves, |children| self.node_tx(children));
 
@@ -201,7 +210,7 @@ impl VtxoTreeSpec {
 
 	/// Return all sighashes ordered from the root down to the leaves.
 	pub fn sighashes(&self, utxo: OutPoint) -> Vec<TapSighash> {
-		let tree = self.build_tree(utxo);
+		let tree = self.build_unsigned_tree(utxo);
 
 		(0..tree.nb_nodes()).rev().map(|idx| {
 			let prev = if let Some((parent, child_idx)) = tree.parent_of_with_idx(idx) {
@@ -223,15 +232,16 @@ impl VtxoTreeSpec {
 	}
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SignedVtxoTree {
 	spec: VtxoTreeSpec,
+	utxo: OutPoint,
 	signatures: Vec<schnorr::Signature>,
 }
 
 impl SignedVtxoTree {
-	pub fn new(spec: VtxoTreeSpec, signatures: Vec<schnorr::Signature>) -> SignedVtxoTree {
-		SignedVtxoTree { spec, signatures }
+	pub fn new(spec: VtxoTreeSpec, utxo: OutPoint, signatures: Vec<schnorr::Signature>) -> SignedVtxoTree {
+		SignedVtxoTree { spec, utxo, signatures }
 	}
 
 	pub fn encode(&self) -> Vec<u8> {
@@ -244,6 +254,38 @@ impl SignedVtxoTree {
 		let mut ret: Self = ciborium::from_reader(bytes)?;
 		ret.spec.cosign_key_agg = Some(musig::key_agg(ret.spec.cosigners.iter().copied()));
 		Ok(ret)
+	}
+
+	pub fn spec(&self) -> &VtxoTreeSpec {
+		&self.spec
+	}
+
+	fn finalize_tx(tx: &mut Transaction, sig: &schnorr::Signature) {
+		// NB all our txs have a single input
+		//TODO(stevenroose) check this, but I think taproot keyspecs have a single witness element
+		tx.input[0].witness.push(&sig[..]);
+	}
+
+	pub fn exit_branch(&self, leaf_idx: usize) -> Option<Vec<Transaction>> {
+		let tree = self.spec.build_unsigned_tree(self.utxo);
+		if leaf_idx >= tree.nb_leaves {
+			return None;
+		}
+
+		let mut branch = Vec::new();
+		let mut cursor = leaf_idx;
+		loop {
+			let mut tx = tree.element_at(cursor).unwrap().clone();
+			SignedVtxoTree::finalize_tx(&mut tx, &self.signatures[cursor]);
+			branch.push(tx);
+			if let Some(p) = tree.parent_idx_of(cursor) {
+				cursor = p;
+			} else {
+				break;
+			}
+		}
+
+		Some(branch)
 	}
 }
 

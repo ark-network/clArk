@@ -216,28 +216,27 @@ mod test {
 
 	#[test]
 	fn test_budget() {
-		let key = SecretKey::new(&mut rand::thread_rng());
-		let pubkey = key.public_key(&util::SECP);
+		let key = KeyPair::new(&util::SECP, &mut rand::thread_rng());
 		let utxo = OutPoint::new(Txid::all_zeros(), 0);
 
-		let chain = ConnectorChain::new(1, utxo, pubkey);
+		let chain = ConnectorChain::new(1, utxo, key.public_key());
 		assert_eq!(chain.connectors().count(), 1);
 		assert_eq!(chain.iter_unsigned_txs().count(), 0);
 		assert_eq!(chain.connectors().next().unwrap(), utxo);
 
-		let chain = ConnectorChain::new(2, utxo, pubkey);
+		let chain = ConnectorChain::new(2, utxo, key.public_key());
 		assert_eq!(chain.connectors().count(), 2);
 		assert_eq!(chain.iter_unsigned_txs().count(), 1);
-		assert_eq!(chain.iter_signed_txs(key).count(), 1);
-		let tx = chain.iter_signed_txs(key).next().unwrap();
+		assert_eq!(chain.iter_signed_txs(&key).count(), 1);
+		let tx = chain.iter_signed_txs(&key).next().unwrap();
 		assert_eq!(TX_SIZE, tx.vsize() as u64);
 
-		let chain = ConnectorChain::new(100, utxo, pubkey);
+		let chain = ConnectorChain::new(100, utxo, key.public_key());
 		assert_eq!(chain.connectors().count(), 100);
 		assert_eq!(chain.iter_unsigned_txs().count(), 99);
-		assert_eq!(chain.iter_signed_txs(key).count(), 99);
-		chain.iter_signed_txs(key).for_each(|t| assert_eq!(t.vsize() as u64, TX_SIZE));
-		let size = chain.iter_signed_txs(key).map(|t| t.vsize() as u64).sum::<u64>();
+		assert_eq!(chain.iter_signed_txs(&key).count(), 99);
+		chain.iter_signed_txs(&key).for_each(|t| assert_eq!(t.vsize() as u64, TX_SIZE));
+		let size = chain.iter_signed_txs(&key).map(|t| t.vsize() as u64).sum::<u64>();
 		assert_eq!(size, ConnectorChain::total_vsize(100));
 		chain.iter_unsigned_txs().for_each(|t| assert_eq!(t.output[1].value, util::DUST.to_sat()));
 		assert_eq!(util::DUST.to_sat(), chain.iter_unsigned_txs().last().unwrap().output[0].value);
@@ -255,14 +254,13 @@ mod test {
 
 	#[test]
 	fn test_signatures() {
-		let key = SecretKey::new(&mut rand::thread_rng());
-		let pubkey = key.public_key(&util::SECP);
+		let key = KeyPair::new(&util::SECP, &mut rand::thread_rng());
 		let utxo = OutPoint::new(Txid::all_zeros(), 0);
-		let spk = ConnectorChain::output_script(pubkey);
+		let spk = ConnectorChain::output_script(key.public_key());
 
 		let mut n = 10;
-		let chain = ConnectorChain::new(n, utxo, pubkey);
-		for tx in chain.iter_signed_txs(key) {
+		let chain = ConnectorChain::new(n, utxo, key.public_key());
+		for tx in chain.iter_signed_txs(&key) {
 			bitcoinconsensus::verify(
 				spk.as_bytes(),
 				ConnectorChain::required_budget(n).to_sat(),

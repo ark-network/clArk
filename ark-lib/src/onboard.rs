@@ -10,28 +10,11 @@ use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{KeyPair, PublicKey, SecretKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash};
-use serde::{Deserialize, Serialize};
 
-use crate::{musig, util, Vtxo};
+use crate::{musig, util, Vtxo, VtxoSpec};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Spec {
-	pub user_key: PublicKey,
-	pub asp_pubkey: PublicKey,
-	pub expiry_delta: u16,
-	pub exit_delta: u16,
-	#[serde(with = "bitcoin::amount::serde::as_sat")]
-	pub amount: Amount,
-}
-
-impl Spec {
-	pub fn combined_pubkey(&self) -> XOnlyPublicKey {
-		musig::combine_keys([self.user_key, self.asp_pubkey])
-	}
-}
-
-pub fn onboard_spk(spec: &Spec) -> ScriptBuf {
-	let expiry = util::delayed_sign(spec.expiry_delta, spec.asp_pubkey.x_only_public_key().0);
+pub fn onboard_spk(spec: &VtxoSpec) -> ScriptBuf {
+	let expiry = util::timelock_sign(spec.expiry_height, spec.asp_pubkey.x_only_public_key().0);
 	let taproot = bitcoin::taproot::TaprootBuilder::new()
 		.add_leaf(0, expiry).unwrap()
 		.finalize(&util::SECP, spec.combined_pubkey()).unwrap();
@@ -40,7 +23,7 @@ pub fn onboard_spk(spec: &Spec) -> ScriptBuf {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserPart {
-	pub spec: Spec,
+	pub spec: VtxoSpec,
 	pub utxo: OutPoint,
 	#[serde(with = "musig::serde::pubnonce")]
 	pub nonce: musig::MusigPubNonce,
@@ -52,16 +35,16 @@ pub struct PrivateUserPart {
 	pub sec_nonce: musig::MusigSecNonce,
 }
 
-pub fn new_user(spec: Spec, utxo: OutPoint) -> (UserPart, PrivateUserPart) {
+pub fn new_user(spec: VtxoSpec, utxo: OutPoint) -> (UserPart, PrivateUserPart) {
 	let session_id_bytes = rand::random::<[u8; 32]>();
 	let session_id = musig::MusigSessionId::assume_unique_per_nonce_gen(session_id_bytes);
-	let agg = musig::key_agg([spec.user_key, spec.asp_pubkey]);
+	let agg = musig::key_agg([spec.user_pubkey, spec.asp_pubkey]);
 
 	let (unlock_sighash, unlock_tx) = unlock_tx_sighash(&spec, utxo);
 	let (sec_nonce, pub_nonce) = agg.nonce_gen(
 		&musig::SECP,
 		session_id,
-		musig::pubkey_to(spec.user_key),
+		musig::pubkey_to(spec.user_pubkey),
 		musig::zkp::Message::from_digest(unlock_sighash.to_byte_array()),
 		Some(rand::random()),
 	).expect("nonce gen");
@@ -86,15 +69,15 @@ pub struct AspPart {
 pub fn new_asp(user: &UserPart, key: &KeyPair) -> AspPart {
 	let (unlock_sighash, _unlock_tx) = unlock_tx_sighash(&user.spec, user.utxo);
 	let msg = unlock_sighash.to_byte_array();
-	let (pub_nonce, sig) = musig::deterministic_partial_sign(key, [user.spec.user_key], [user.nonce], msg);
+	let (pub_nonce, sig) = musig::deterministic_partial_sign(key, [user.spec.user_pubkey], [user.nonce], msg);
 	AspPart {
 		nonce: pub_nonce,
 		signature: sig,
 	}
 }
 
-pub fn create_unlock_tx(spec: &Spec, utxo: OutPoint) -> Transaction {
-	let exit_spk = util::exit_spk(spec.user_key, spec.asp_pubkey, spec.exit_delta);
+pub fn create_unlock_tx(spec: &VtxoSpec, utxo: OutPoint) -> Transaction {
+	let exit_spk = util::exit_spk(spec.user_pubkey, spec.asp_pubkey, spec.exit_delta);
 	Transaction {
 		version: 2,
 		lock_time: LockTime::ZERO,
@@ -114,7 +97,7 @@ pub fn create_unlock_tx(spec: &Spec, utxo: OutPoint) -> Transaction {
 	}
 }
 
-pub fn unlock_tx_sighash(spec: &Spec, utxo: OutPoint) -> (TapSighash, Transaction) {
+pub fn unlock_tx_sighash(spec: &VtxoSpec, utxo: OutPoint) -> (TapSighash, Transaction) {
 	let unlock_tx = create_unlock_tx(spec, utxo);
 	let mut cache = SighashCache::new(&unlock_tx);
 	let prev = TxOut {
@@ -138,7 +121,7 @@ pub fn finish(
 	let (unlock_sighash, _unlock_tx) = unlock_tx_sighash(&user.spec, user.utxo);
 	let agg_nonce = musig::nonce_agg([user.nonce, asp.nonce]);
 	let (_user_sig, final_sig) = musig::partial_sign(
-		[user.spec.user_key, user.spec.asp_pubkey],
+		[user.spec.user_pubkey, user.spec.asp_pubkey],
 		agg_nonce,
 		key,
 		private.sec_nonce,

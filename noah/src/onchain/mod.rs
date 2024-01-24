@@ -15,7 +15,7 @@ use bdk_electrum::{
 	ElectrumExt, ElectrumUpdate,
 };
 use bdk_file_store::Store;
-use bitcoin::{Address, Amount, Network, Transaction, Txid};
+use bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 use bitcoin::bip32;
 use miniscript::Descriptor;
@@ -51,6 +51,12 @@ impl Wallet {
 			wallet: wallet,
 			bitcoind: bitcoind,
 		})
+	}
+
+	pub fn tip(&self) -> anyhow::Result<(u32, BlockHash)> {
+		let he = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&self.bitcoind)?;
+		let ha = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_hash(&self.bitcoind, he)?;
+		Ok((he as u32, ha))
 	}
 
 	pub fn sync(&mut self) -> anyhow::Result<Amount> {

@@ -5,7 +5,6 @@ use std::path::Path;
 use anyhow::{bail, Context};
 use bitcoin::{Amount, OutPoint};
 use bitcoin::secp256k1::schnorr;
-use serde::{Deserialize, Serialize};
 use sled::transaction as tx;
 
 use ark::{Vtxo, VtxoId};
@@ -26,12 +25,12 @@ pub struct Db {
 	db: sled::Db,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum StoredVtxo {
 	Onboard {
 		#[serde(skip)]
 		utxo: OutPoint,
-		spec: ark::onboard::Spec,
+		spec: ark::VtxoSpec,
 		exit_tx_signature: schnorr::Signature,
 	}
 }
@@ -39,13 +38,21 @@ pub enum StoredVtxo {
 impl StoredVtxo {
 	pub fn id(&self) -> VtxoId {
 		match self {
-			StoredVtxo::Onboard { utxo, .. } => VtxoId::new(*utxo),
+			StoredVtxo::Onboard { utxo, .. } => (*utxo).into(),
 		}
 	}
 
 	pub fn amount(&self) -> Amount {
 		match self {
 			StoredVtxo::Onboard { spec, .. } => spec.amount,
+		}
+	}
+
+	pub fn into_vtxo(self) -> Vtxo {
+		match self {
+			StoredVtxo::Onboard { utxo, spec, exit_tx_signature } => {
+				Vtxo::Onboard { utxo, spec, exit_tx_signature }
+			}
 		}
 	}
 

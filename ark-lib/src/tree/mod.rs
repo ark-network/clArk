@@ -194,16 +194,20 @@ impl<T> Tree<T> {
 		self.nodes.get_mut(idx).map(|n| &mut n.elem)
 	}
 
+	pub fn parent_idx_of(&self, idx: usize) -> Option<usize> {
+		self.nodes.get(idx).and_then(|n| n.parent)
+	}
+
 	pub fn parent_of(&self, idx: usize) -> Option<&T> {
-		self.nodes.get(idx).and_then(|n| n.parent).map(|idx| &self.nodes[idx].elem)
+		self.parent_idx_of(idx).map(|idx| &self.nodes[idx].elem)
 	}
 
 	pub fn parent_of_mut(&mut self, idx: usize) -> Option<&mut T> {
-		self.nodes.get(idx).and_then(|n| n.parent).map(|idx| &mut self.nodes[idx].elem)
+		self.parent_idx_of(idx).map(|idx| &mut self.nodes[idx].elem)
 	}
 
 	pub fn parent_of_with_idx(&self, idx: usize) -> Option<(&T, usize)> {
-		self.nodes.get(idx).and_then(|n| n.parent).map(|i| {
+		self.parent_idx_of(idx).map(|i| {
 			let child_idx = self.nodes[idx].children.iter()
 				.find(|c| **c == Some(idx)).copied().flatten()
 				.expect("broken tree");
@@ -212,7 +216,7 @@ impl<T> Tree<T> {
 	}
 
 	pub fn parent_of_with_idx_mut(&mut self, idx: usize) -> Option<(&mut T, usize)> {
-		self.nodes.get(idx).and_then(|n| n.parent).map(|i| {
+		self.parent_idx_of(idx).map(|i| {
 			let child_idx = self.nodes[idx].children.iter()
 				.find(|c| **c == Some(idx)).copied().flatten()
 				.expect("broken tree");

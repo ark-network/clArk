@@ -1,6 +1,8 @@
 
 
 #[macro_use] extern crate log;
+#[macro_use] extern crate serde;
+
 
 mod database;
 mod rpc;
@@ -39,8 +41,8 @@ pub struct Config {
 	pub round_submit_time: Duration,
 	pub round_sign_time: Duration,
 	pub nb_round_nonces: usize,
-	pub vtxo_expiry_blocks: u32,
-	pub vtxo_exit_timeout_blocks: u32,
+	pub vtxo_expiry_delta: u16,
+	pub vtxo_exit_delta: u16,
 }
 
 // NB some random defaults to have something
@@ -54,8 +56,8 @@ impl Default for Config {
 			round_submit_time: Duration::from_secs(2),
 			round_sign_time: Duration::from_secs(2),
 			nb_round_nonces: 100,
-			vtxo_expiry_blocks: 1 * 24 * 6, // 1 day
-			vtxo_exit_timeout_blocks: 2 * 6, // 2 hrs
+			vtxo_expiry_delta: 1 * 24 * 6, // 1 day
+			vtxo_exit_delta: 2 * 6, // 2 hrs
 		}
 	}
 }

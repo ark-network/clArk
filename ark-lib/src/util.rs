@@ -40,8 +40,8 @@ pub fn exit_spk(user_pubkey: PublicKey, asp_pubkey: PublicKey, exit_delta: u16) 
 }
 
 /// Create a tapscript that is a checksig and an absolute.
-pub fn timelock_sign(timelock_height: u16, pubkey: XOnlyPublicKey) -> ScriptBuf {
-	let lt = bitcoin::absolute::LockTime::from_height(timelock_height as u32).unwrap();
+pub fn timelock_sign(timelock_height: u32, pubkey: XOnlyPublicKey) -> ScriptBuf {
+	let lt = bitcoin::absolute::LockTime::from_height(timelock_height).unwrap();
 	bitcoin::Script::builder()
 		.push_int(lt.to_consensus_u32().try_into().unwrap())
 		.push_opcode(opcodes::all::OP_CSV)

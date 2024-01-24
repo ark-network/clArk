@@ -19,7 +19,7 @@ use crate::database::StoredVtxo;
 
 #[derive(Debug, Clone)]
 pub enum RoundEvent {
-	NewRound {
+	Start {
 		id: u64,
 	},
 	Proposal {
@@ -29,6 +29,11 @@ pub enum RoundEvent {
 		vtxos_signers: Vec<PublicKey>,
 		vtxos_agg_nonces: Vec<musig::MusigAggNonce>,
 		forfeit_nonces: HashMap<VtxoId, Vec<musig::MusigPubNonce>>,
+	},
+	Finished {
+		id: u64,
+		vtxos: SignedVtxoTree,
+		round_tx: Transaction,
 	},
 }
 
@@ -43,7 +48,7 @@ pub enum RoundInput {
 	Signatures {
 		vtxo_pubkey: PublicKey,
 		vtxo_signatures: Vec<musig::MusigPartialSignature>,
-		forfeit: HashMap<VtxoId, Vec<musig::MusigPartialSignature>>,
+		forfeit: HashMap<VtxoId, (Vec<musig::MusigPubNonce>, Vec<musig::MusigPartialSignature>)>,
 	},
 }
 
@@ -82,16 +87,16 @@ pub async fn run_round_scheduler(
 		info!("Starting round {}", round_id);
 
 		// Start new round, announce.
-		app.round_event_tx.send(RoundEvent::NewRound{ id: round_id })?;
+		app.round_event_tx.send(RoundEvent::Start { id: round_id })?;
 
 		// In this loop we will try to finish the round and make new attempts.
 		let mut allowed_inputs = HashSet::new();
 		'attempt: loop {
-			let mut all_inputs = Vec::new();
-			let mut all_outputs = Vec::new();
-			let mut cosigners = HashSet::new();
+			let mut all_inputs = Vec::<StoredVtxo>::new();
+			let mut all_outputs = Vec::<Destination>::new();
+			let mut cosigners = HashSet::<PublicKey>::new();
 			cosigners.insert(app.master_key.public_key());
-			let mut nonces = Vec::new();
+			let mut nonces = Vec::<Vec<musig::MusigPubNonce>>::new();
 
 			// Start receiving payments.
 			let timeout = tokio::time::sleep(cfg.round_submit_time);
@@ -137,15 +142,16 @@ pub async fn run_round_scheduler(
 			allowed_inputs.extend(all_inputs.iter().map(|v| v.id()));
 
 			// Start vtxo tree and connector chain construction
+			let tip = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&app.bitcoind)?;
 			let vtxos_spec = VtxoTreeSpec::new(
 				cosigners.iter().copied().collect(),
 				all_outputs,
 				app.master_key.public_key(),
-				cfg.vtxo_expiry_blocks, //TODO(stevenroose) needs to be CLTV height
-				cfg.vtxo_exit_timeout_blocks,
+				tip as u32 + cfg.vtxo_expiry_delta as u32,
+				cfg.vtxo_exit_delta,
 			);
 			//TODO(stevenroose) this is super inefficient, improve this with direct getter
-			let nb_nodes = vtxos_spec.build_tree(OutPoint::null()).nb_nodes();
+			let nb_nodes = vtxos_spec.build_unsigned_tree(OutPoint::null()).nb_nodes();
 			//TODO(stevenroose) handle this better
 			assert!(nb_nodes < cfg.nb_round_nonces);
 			let connector_output = ConnectorChain::output(
@@ -156,7 +162,7 @@ pub async fn run_round_scheduler(
 			app.sync_onchain_wallet().context("error syncing onchain wallet")?;
 			//TODO(stevenroose) think about if we can release lock sooner
 			let mut wallet = app.wallet.lock().await;
-			let psbt = {
+			let mut round_tx_psbt = {
 				let mut b = wallet.build_tx();
 				b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
 				b.add_recipient(vtxos_spec.cosign_spk(), vtxos_spec.total_required_value().to_sat());
@@ -164,9 +170,9 @@ pub async fn run_round_scheduler(
 				b.fee_rate(bdk::FeeRate::from_sat_per_vb(100.0)); //TODO(stevenroose) fix
 				b.finish().context("bdk failed to create round tx")?
 			};
-			let tx = psbt.extract_tx();
-			let vtxos_utxo = OutPoint::new(tx.txid(), 0);
-			let conns_utxo = OutPoint::new(tx.txid(), 1);
+			let round_tx = round_tx_psbt.clone().extract_tx();
+			let vtxos_utxo = OutPoint::new(round_tx.txid(), 0);
+			let conns_utxo = OutPoint::new(round_tx.txid(), 1);
 
 			// Generate nonces and combine with user's nonces.
 			let (sec_vtxo_nonces, pub_vtxo_nonces) = {
@@ -211,15 +217,15 @@ pub async fn run_round_scheduler(
 			app.round_event_tx.send(RoundEvent::Proposal {
 				id: round_id,
 				vtxos_spec: vtxos_spec.clone(),
-				round_tx: tx.clone(),
+				round_tx: round_tx.clone(),
 				vtxos_signers: cosigners.iter().copied().collect(),
 				vtxos_agg_nonces: agg_vtxo_nonces.clone(),
-				forfeit_nonces: forfeit_pub_nonces,
+				forfeit_nonces: forfeit_pub_nonces.clone(),
 			})?;
 
 			// Wait for signatures from users.
-			let mut partial_sigs = HashMap::with_capacity(cosigners.len());
-			let mut forfeit_sigs = HashMap::with_capacity(all_inputs.len());
+			let mut vtxo_part_sigs = HashMap::with_capacity(cosigners.len());
+			let mut forfeit_part_sigs = HashMap::with_capacity(all_inputs.len());
 			let timeout = tokio::time::sleep(cfg.round_sign_time);
 			tokio::pin!(timeout);
 			'receive: loop {
@@ -231,10 +237,21 @@ pub async fn run_round_scheduler(
 								warn!("Received signatures from non-signer: {}", vtxo_pubkey);
 								continue 'receive;
 							}
+
 							//TODO(stevenroose) validate partial signatures
-							partial_sigs.insert(vtxo_pubkey, vtxo_signatures);
+							vtxo_part_sigs.insert(vtxo_pubkey, vtxo_signatures);
+
 							//TODO(stevenroose) validate forfeit txs
-							forfeit_sigs.extend(forfeit.into_iter());
+							let mut ok = true;
+							for (id, (n, s)) in &forfeit {
+								if n.len() != all_inputs.len() || s.len() != all_inputs.len() {
+									warn!("User didn't provide enough forfeit sigs for {}", id);
+									ok = false;
+								}
+							}
+							if ok {
+								forfeit_part_sigs.extend(forfeit.into_iter());
+							}
 						},
 						v => debug!("Received unexpected input: {:?}", v),
 					}
@@ -242,14 +259,50 @@ pub async fn run_round_scheduler(
 			}
 
 			//TODO(stevenroose) kick out signers that didn't sign and retry
-			assert_eq!(cosigners.len(), partial_sigs.len());
+			assert_eq!(cosigners.len(), vtxo_part_sigs.len());
+			assert_eq!(forfeit_part_sigs.len(), all_inputs.len());
 
-			// Combine the signatures.
+			// Finish the forfeit signatures.
+			let mut forfeit_sigs = HashMap::with_capacity(all_inputs.len());
+			let mut missing_forfeits = HashSet::new();
+			let connectors = ConnectorChain::new(
+				all_inputs.len(), conns_utxo, app.master_key.public_key(),
+			);
+			for vtxo in &all_inputs {
+				if let Some((user_nonces, partial_sigs)) = forfeit_part_sigs.get(&vtxo.id()) {
+					let vtxo = vtxo.clone().into_vtxo();
+					let sec_nonces = forfeit_sec_nonces.remove(&vtxo.id()).unwrap().into_iter();
+					let pub_nonces = forfeit_pub_nonces.get(&vtxo.id()).unwrap();
+					let connectors = connectors.connectors();
+					let mut sigs = Vec::with_capacity(all_inputs.len());
+					for (i, (conn, sec)) in connectors.zip(sec_nonces.into_iter()).enumerate() {
+						let (sighash, _) = ark::forfeit::forfeit_sighash(
+							&vtxo, conn,
+						);
+						let agg_nonce = musig::nonce_agg([user_nonces[i], pub_nonces[i]]);
+						let (_, sig) = musig::partial_sign(
+							[app.master_key.public_key(), vtxo.spec().user_pubkey],
+							agg_nonce,
+							&app.master_key,
+							sec,
+							sighash.to_byte_array(),
+							Some(&[partial_sigs[i]]),
+						);
+						sigs.push(sig);
+					}
+					forfeit_sigs.insert(vtxo.id(), sigs);
+				} else {
+					missing_forfeits.insert(vtxo.id());
+				}
+			}
+			//TODO(stevenroose) if missing forfeits, ban inputs and restart round
+
+			// Combine the vtxo signatures.
 			let sighashes = vtxos_spec.sighashes(vtxos_utxo);
 			assert_eq!(sighashes.len(), agg_vtxo_nonces.len());
 			let mut signatures = Vec::with_capacity(nb_nodes);
 			for (i, sec_nonce) in sec_vtxo_nonces.into_iter().enumerate() {
-				let others = partial_sigs.values().map(|s| s[i].clone()).collect::<Vec<_>>();
+				let others = vtxo_part_sigs.values().map(|s| s[i].clone()).collect::<Vec<_>>();
 				let sig = musig::partial_sign(
 					cosigners.iter().copied(),
 					agg_vtxo_nonces[i],
@@ -262,8 +315,34 @@ pub async fn run_round_scheduler(
 			}
 			
 			// Then construct the final signed vtxo tree.
-			let signed = SignedVtxoTree::new(vtxos_spec, signatures);
+			let signed_vtxos = SignedVtxoTree::new(vtxos_spec, vtxos_utxo, signatures);
 
+			// And sign the on-chain tx.
+			let finalized = wallet.sign(&mut round_tx_psbt, bdk::SignOptions::default())?;
+			assert!(finalized);
+			let round_tx = round_tx_psbt.extract_tx();
+			drop(wallet); // we no longer need the lock
+
+			// Broadcast over bitcoind.
+			let bc = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&app.bitcoind, &round_tx);
+			if let Err(e) = bc {
+				warn!("Couldn't broadcast round tx: {}", e);
+			}
+
+			// Send out the finished round to users.
+			app.round_event_tx.send(RoundEvent::Finished {
+				id: round_id,
+				vtxos: signed_vtxos.clone(),
+				round_tx: round_tx.clone(),
+			})?;
+
+
+
+
+
+
+			//TODO(stevenroose) store forfeits in db
+			//TODO(stevenroose) store vtxo tree in db
 
 			break 'attempt;
 		}

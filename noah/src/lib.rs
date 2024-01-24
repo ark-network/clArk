@@ -19,9 +19,9 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{rand, KeyPair, PublicKey};
 use tokio_stream::StreamExt;
 
-use ark::{musig, Destination, VtxoId};
+use ark::{musig, Destination, Vtxo, VtxoId, VtxoSpec};
 use ark::connectors::ConnectorChain;
-use ark::tree::signed::VtxoTreeSpec;
+use ark::tree::signed::{SignedVtxoTree, VtxoTreeSpec};
 use arkd_rpc_client as rpc;
 
 
@@ -118,14 +118,15 @@ impl Wallet {
 	}
 
 	pub async fn onboard(&mut self, amount: Amount) -> anyhow::Result<()> {
+		let current_height = self.onchain.tip()?.0;
 		//TODO(stevenroose) impl key derivation
 		let key = KeyPair::from_secret_key(
 			&SECP, &self.vtxo_seed.derive_priv(&SECP, &[0.into()]).unwrap().private_key,
 		);
-		let spec = ark::onboard::Spec {
-			user_key: key.public_key(),
+		let spec = ark::VtxoSpec {
+			user_pubkey: key.public_key(),
 			asp_pubkey: self.ark_info.asp_pubkey,
-			expiry_delta: 14 * 144,
+			expiry_height: current_height + 14 * 144,
 			exit_delta: 144,
 			amount: amount,
 		};
@@ -183,7 +184,7 @@ impl Wallet {
 		// Wait for the next round start.
 		let mut round_id = loop {
 			match events.next().await.context("events stream broke")??.event.unwrap() {
-				rpc::round_event::Event::NewRound(rpc::NewRound { round_id }) => break round_id,
+				rpc::round_event::Event::Start(rpc::RoundStart { round_id }) => break round_id,
 				_ => {},
 			}
 		};
@@ -223,7 +224,7 @@ impl Wallet {
 				// panicking seems kinda ok since if we can't understand the ASP,
 				// what are we even doing?
 				match events.next().await.context("events stream broke")??.event.unwrap() {
-					rpc::round_event::Event::RoundProposal(p) => {
+					rpc::round_event::Event::Proposal(p) => {
 						assert_eq!(p.round_id, round_id, "missing messages");
 						let vtxos = VtxoTreeSpec::decode(&p.vtxos_spec)
 							.context("decoding vtxo spec")?;
@@ -254,11 +255,13 @@ impl Wallet {
 						break (vtxos, tx, cosigners, vtxo_nonces, forfeit_nonces);
 					},
 					// If a new round started meanwhile, pick up on that one.
-					rpc::round_event::Event::NewRound(rpc::NewRound { round_id: id }) => {
+					rpc::round_event::Event::Start(rpc::RoundStart { round_id: id }) => {
+						error!("Unexpected new round start...");
 						round_id = id;
 						continue 'round;
 					},
-					_ => {},
+					//TODO(stevenroose) make this robust
+					other => panic!("Unexpected message: {:?}", other),
 				}
 			};
 
@@ -277,13 +280,13 @@ impl Wallet {
 						.get(i)
 						.context("asp didn't provide enough forfeit nonces")?;
 
-					let (_, sig) = musig::deterministic_partial_sign(
+					let (nonce, sig) = musig::deterministic_partial_sign(
 						&vtxo_key,
 						[vtxo_key.public_key(), self.ark_info.asp_pubkey],
 						[asp_nonce.clone()],
 						sighash.to_byte_array(),
 					);
-					Ok(sig)
+					Ok((nonce, sig))
 				}).collect::<anyhow::Result<Vec<_>>>()?;
 				Ok((v.id(), sigs))
 			}).collect::<anyhow::Result<HashMap<_, _>>>()?;
@@ -306,7 +309,8 @@ impl Wallet {
 				forfeit: forfeit_signatures.into_iter().map(|(id, sigs)| {
 					rpc::ForfeitSignatures {
 						input_vtxo_id: id.bytes().to_vec(),
-						signatures: sigs.into_iter().map(|s| s.serialize().to_vec()).collect(),
+						pub_nonces: sigs.iter().map(|s| s.0.serialize().to_vec()).collect(),
+						signatures: sigs.iter().map(|s| s.1.serialize().to_vec()).collect(),
 					}
 				}).collect(),
 				vtxo: Some(rpc::VtxoSignatures {
@@ -315,10 +319,62 @@ impl Wallet {
 				}),
 			}).await?;
 
+			// Wait for the finishing of the round.
+			let (vtxos, round_tx) = match events.next().await.context("events stream broke")??.event.unwrap() {
+				rpc::round_event::Event::Finished(f) => {
+					assert_eq!(f.round_id, round_id);
+					let vtxos = SignedVtxoTree::decode(&f.signed_vtxos)
+						.context("invalid vtxo tree from asp")?;
+					let tx = bitcoin::consensus::deserialize(&f.round_tx)
+						.context("invalid round tx from asp")?;
+					(vtxos, tx)
+				},
+				// If a new round started meanwhile, pick up on that one.
+				rpc::round_event::Event::Start(rpc::RoundStart { round_id: id }) => {
+					error!("Unexpected new round start...");
+					round_id = id;
+					continue 'round;
+				},
+				//TODO(stevenroose) make this robust
+				other => panic!("Unexpected message: {:?}", other),
+			};
 
+			// First we also broadcast the tx.
+			if let Err(e) = self.onchain.broadcast_tx(&round_tx) {
+				warn!("Couldn't broadcast round_tx: {}", e);
+			}
+
+			// Now we have to extract our own vtxos from the tree.
+			// Initially this will just be one, our change.
+			if let Some(change) = change {
+				let leaf_idx = {
+					let mut iter = vtxos.spec().find_leaf_idxs(&change);
+					let ret = iter.next().context("asp didn't include our change")?;
+					if iter.next().is_some() {
+						error!("Our change was included twice??");
+					}
+					ret
+				};
+				let exit_branch = vtxos.exit_branch(leaf_idx).unwrap();
+				let vtxo = Vtxo::Round {
+					utxo: vtxos_utxo,
+					spec: VtxoSpec {
+						user_pubkey: change.pubkey,
+						asp_pubkey: self.ark_info.asp_pubkey,
+						expiry_height: vtxos.spec().expiry_height,
+						exit_delta: vtxos.spec().exit_delta,
+						amount: change.amount,
+					},
+					exit_branch: exit_branch,
+				};
+				self.db.store_vtxo(vtxo).context("failed to store vtxo");
+			} else {
+				info!("We used up all our money..");
+			}
+
+			info!("Finished payment");
 			break;
 		}
-
 
 		Ok(())
 	}

@@ -97,15 +97,15 @@ impl rpc::ArkService for Arc<App> {
 			let e = e.map_err(|e| internal!("broken stream: {}", e))?;
 			Ok(rpc::RoundEvent {
 				event: Some(match e {
-					RoundEvent::NewRound { id } => {
-						rpc::round_event::Event::NewRound(rpc::NewRound {
+					RoundEvent::Start { id } => {
+						rpc::round_event::Event::Start(rpc::RoundStart {
 							round_id: id,
 						})
 					},
 					RoundEvent::Proposal {
 						id, vtxos_spec, round_tx, vtxos_signers, vtxos_agg_nonces, forfeit_nonces,
 					} => {
-						rpc::round_event::Event::RoundProposal(rpc::RoundProposal {
+						rpc::round_event::Event::Proposal(rpc::RoundProposal {
 							round_id: id,
 							vtxos_spec: vtxos_spec.encode(),
 							round_tx: bitcoin::consensus::serialize(&round_tx),
@@ -117,6 +117,13 @@ impl rpc::ArkService for Arc<App> {
 									pub_nonces: nonces.into_iter().map(|n| n.serialize().to_vec()).collect(),
 								}
 							}).collect(),
+						})
+					},
+					RoundEvent::Finished { id, vtxos, round_tx } => {
+						rpc::round_event::Event::Finished(rpc::RoundFinished {
+							round_id: id,
+							signed_vtxos: vtxos.encode(),
+							round_tx: bitcoin::consensus::serialize(&round_tx),
 						})
 					},
 				})
@@ -179,11 +186,15 @@ impl rpc::ArkService for Arc<App> {
 		let forfeit = req.forfeit.into_iter().map(|forfeit| {
 			let id = VtxoId::from_slice(&forfeit.input_vtxo_id)
 				.map_err(|e| badarg!("invalid vtxo id: {}", e))?;
+			let nonces = forfeit.pub_nonces.into_iter().map(|n| {
+				musig::MusigPubNonce::from_slice(&n)
+					.map_err(|e| badarg!("invalid forfeit nonce: {}", e))
+			}).collect::<Result<_, tonic::Status>>()?;
 			let signatures = forfeit.signatures.into_iter().map(|s| {
 				musig::MusigPartialSignature::from_slice(&s)
 					.map_err(|e| badarg!("invalid forfeit sig: {}", e))
 			}).collect::<Result<_, tonic::Status>>()?;
-			Ok((id, signatures))
+			Ok((id, (nonces, signatures)))
 		}).collect::<Result<_, tonic::Status>>()?;
 
 		let vtxo = req.vtxo.ok_or_else(|| badarg!("vtxo signatures missing"))?;

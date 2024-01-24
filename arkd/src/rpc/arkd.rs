@@ -29,7 +29,7 @@ pub struct RegisterOnboardVtxoRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NewRound {
+pub struct RoundStart {
     #[prost(uint64, tag = "1")]
     pub round_id: u64,
 }
@@ -59,8 +59,18 @@ pub struct RoundProposal {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundFinished {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RoundEvent {
-    #[prost(oneof = "round_event::Event", tags = "1, 2")]
+    #[prost(oneof = "round_event::Event", tags = "1, 2, 3")]
     pub event: ::core::option::Option<round_event::Event>,
 }
 /// Nested message and enum types in `RoundEvent`.
@@ -69,9 +79,11 @@ pub mod round_event {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Event {
         #[prost(message, tag = "1")]
-        NewRound(super::NewRound),
+        Start(super::RoundStart),
         #[prost(message, tag = "2")]
-        RoundProposal(super::RoundProposal),
+        Proposal(super::RoundProposal),
+        #[prost(message, tag = "3")]
+        Finished(super::RoundFinished),
     }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -101,6 +113,8 @@ pub struct ForfeitSignatures {
     #[prost(bytes = "vec", tag = "1")]
     pub input_vtxo_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", repeated, tag = "2")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "3")]
     pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

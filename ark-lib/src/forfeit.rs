@@ -3,7 +3,7 @@
 use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 
-use crate::{util, Vtxo};
+use crate::{util, Vtxo, VtxoSpec};
 use crate::connectors::ConnectorChain;
 
 
@@ -32,7 +32,7 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 		output: vec![
 			TxOut {
 				value: leftover,
-				script_pubkey: ScriptBuf::new_v1_p2tr(&util::SECP, vtxo.combined_pubkey(), None),
+				script_pubkey: ScriptBuf::new_v1_p2tr(&util::SECP, vtxo.spec().combined_pubkey(), None),
 			},
 			util::dust_fee_anchor(),
 		],
@@ -40,13 +40,14 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 }
 
 pub fn forfeit_sighash(vtxo: &Vtxo, connector: OutPoint) -> (TapSighash, Transaction) {
-	let exit_spk = util::exit_spk(vtxo.user_pubkey(), vtxo.asp_pubkey(), vtxo.exit_delta());
+	let spec = vtxo.spec();
+	let exit_spk = util::exit_spk(spec.user_pubkey, spec.asp_pubkey, spec.exit_delta);
 	let exit_prevout = TxOut {
 		script_pubkey: exit_spk,
-		value: vtxo.amount().to_sat(),
+		value: spec.amount.to_sat(),
 	};
 	let connector_prevout = TxOut {
-		script_pubkey: ConnectorChain::output_script(vtxo.asp_pubkey()),
+		script_pubkey: ConnectorChain::output_script(spec.asp_pubkey),
 		value: util::DUST.to_sat(),
 	};
 	let tx = create_forfeit_tx(vtxo, connector);

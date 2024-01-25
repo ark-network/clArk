@@ -41,7 +41,7 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 
 pub fn forfeit_sighash(vtxo: &Vtxo, connector: OutPoint) -> (TapSighash, Transaction) {
 	let spec = vtxo.spec();
-	let exit_spk = util::exit_spk(spec.user_pubkey, spec.asp_pubkey, spec.exit_delta);
+	let exit_spk = vtxo.spec().exit_spk();
 	let exit_prevout = TxOut {
 		script_pubkey: exit_spk,
 		value: spec.amount.to_sat(),

@@ -13,7 +13,7 @@ mod napkin;
 
 use std::{fmt, io};
 
-use bitcoin::{Amount, OutPoint, Transaction, Txid};
+use bitcoin::{taproot, Amount, OutPoint, ScriptBuf, Transaction, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 
@@ -90,6 +90,22 @@ impl VtxoSpec {
 	/// Get the musig-combined user + asp pubkey.
 	pub fn combined_pubkey(&self) -> XOnlyPublicKey {
 		musig::combine_keys([self.user_pubkey, self.asp_pubkey])
+	}
+
+	fn exit_taproot(&self) -> taproot::TaprootSpendInfo {
+		let exit_timeout = util::delayed_sign(self.exit_delta, self.user_pubkey.x_only_public_key().0);
+		let combined = musig::combine_keys([self.user_pubkey, self.asp_pubkey]);
+		bitcoin::taproot::TaprootBuilder::new()
+			.add_leaf(0, exit_timeout).unwrap()
+			.finalize(&util::SECP, combined).unwrap()
+	}
+
+	pub fn exit_taptweak(&self) -> taproot::TapTweakHash {
+		self.exit_taproot().tap_tweak()
+	}
+
+	pub fn exit_spk(&self) -> ScriptBuf {
+		ScriptBuf::new_v1_p2tr_tweaked(self.exit_taproot().output_key())
 	}
 }
 

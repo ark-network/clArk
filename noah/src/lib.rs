@@ -304,6 +304,7 @@ impl Wallet {
 						[vtxo_key.public_key(), self.ark_info.asp_pubkey],
 						[asp_nonce.clone()],
 						sighash.to_byte_array(),
+						Some(v.spec().exit_taptweak().to_byte_array()),
 					);
 					Ok((nonce, sig))
 				}).collect::<anyhow::Result<Vec<_>>>()?;
@@ -321,6 +322,7 @@ impl Wallet {
 						&cosign_key,
 						sec_nonce,
 						sighash.to_byte_array(),
+						Some(vtxo_tree.cosign_taptweak().to_byte_array()),
 						None,
 					).0
 				}).collect::<Vec<_>>();

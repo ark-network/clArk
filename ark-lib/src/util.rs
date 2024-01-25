@@ -1,6 +1,6 @@
 
 use bitcoin::{Amount, Script, ScriptBuf, TxOut};
-use bitcoin::opcodes;
+use bitcoin::{opcodes, taproot};
 use bitcoin::secp256k1::{self, PublicKey, XOnlyPublicKey};
 
 use crate::musig;
@@ -28,15 +28,6 @@ pub fn delayed_sign(delay_blocks: u16, pubkey: XOnlyPublicKey) -> ScriptBuf {
 		.push_slice(pubkey.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIG)
 		.into_script()
-}
-
-pub fn exit_spk(user_pubkey: PublicKey, asp_pubkey: PublicKey, exit_delta: u16) -> ScriptBuf {
-	let exit_timeout = delayed_sign(exit_delta, user_pubkey.x_only_public_key().0);
-	let combined = musig::combine_keys([user_pubkey, asp_pubkey]);
-	let tr = bitcoin::taproot::TaprootBuilder::new()
-		.add_leaf(0, exit_timeout).unwrap()
-		.finalize(&SECP, combined).unwrap();
-	ScriptBuf::new_v1_p2tr_tweaked(tr.output_key())
 }
 
 /// Create a tapscript that is a checksig and an absolute.

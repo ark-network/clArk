@@ -1,9 +1,7 @@
 
-use bitcoin::{Amount, Script, ScriptBuf, TxOut};
-use bitcoin::{opcodes, taproot};
-use bitcoin::secp256k1::{self, PublicKey, XOnlyPublicKey};
-
-use crate::musig;
+use bitcoin::{Amount, Script, ScriptBuf, TxOut, Witness};
+use bitcoin::opcodes;
+use bitcoin::secp256k1::{self, XOnlyPublicKey};
 
 /// Dust value of 330 satoshis.
 ///
@@ -51,6 +49,12 @@ pub fn dust_fee_anchor() -> TxOut {
 		},
 		value: DUST.to_sat(),
 	}
+}
+
+pub fn dust_fee_anchor_witness() -> Witness {
+	let mut ret = Witness::new();
+	ret.push(&Script::builder().push_opcode(opcodes::OP_TRUE).into_script()[..]);
+	ret
 }
 
 #[cfg(test)]

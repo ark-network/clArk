@@ -1,18 +1,13 @@
 
 
 use std::{cmp, io};
-use std::collections::VecDeque;
-use std::time::{Duration, SystemTime};
 
 use bitcoin::{
-	taproot, Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, Txid,
-	TxIn, TxOut, Weight, Witness,
+	taproot, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
-use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, schnorr, KeyPair, PublicKey, SecretKey, XOnlyPublicKey};
+use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::{TaprootBuilder};
-use bitcoin::opcodes;
 
 use crate::{musig, util, Destination};
 use crate::tree::Tree;
@@ -299,4 +294,8 @@ impl SignedVtxoTree {
 #[cfg(test)]
 mod test {
 	use super::*;
+
+	#[test]
+	fn test_node_tx_sizes() {
+	}
 }

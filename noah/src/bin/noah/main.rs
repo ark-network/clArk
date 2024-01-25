@@ -31,7 +31,6 @@ enum Cli {
 	Balance {},
 	#[command()]
 	Onboard {
-		#[arg(long, required = true)]
 		amount: Amount,
 	},
 	#[command()]
@@ -39,6 +38,12 @@ enum Cli {
 		pubkey: PublicKey,
 		amount: Amount,
 	},
+	#[command()]
+	StartExit {},
+
+	/// Dev command to drop the vtxo database.
+	#[command()]
+	DropVtxos {},
 }
 
 #[tokio::main]
@@ -75,6 +80,7 @@ async fn main() {
 		Cli::Balance { } => {
 			let mut w = Wallet::open(cfg).await.unwrap();
 			info!("Onchain balance: {}", w.onchain_balance().unwrap());
+			info!("Offchain balance: {}", w.offchain_balance().await.unwrap());
 		},
 		Cli::Onboard { amount } => {
 			let mut w = Wallet::open(cfg).await.unwrap();
@@ -84,6 +90,15 @@ async fn main() {
 			let mut w = Wallet::open(cfg).await.unwrap();
 			let dest = Destination { pubkey, amount };
 			w.send_payment(dest).await.unwrap();
+		},
+		Cli::StartExit {  } => {
+			let mut w = Wallet::open(cfg).await.unwrap();
+			w.start_unilateral_exit().await.unwrap();
+		},
+		Cli::DropVtxos {  } => {
+			let w = Wallet::open(cfg).await.unwrap();
+			w.drop_vtxos().await.unwrap();
+			info!("Dropped all vtxos");
 		},
 	}
 }

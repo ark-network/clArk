@@ -3,15 +3,22 @@
 use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 
-use crate::{util, Vtxo, VtxoSpec};
+use crate::{util, Vtxo};
 use crate::connectors::ConnectorChain;
 
 
+//TODO(stevenroose) fix
 pub const SIGNED_FORFEIT_TX_VSIZE: u64 = 0;
 
 pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 	// NB we gain the dust from the connector and lose the dust from the fee anchor
 	let leftover = vtxo.amount().to_sat() - SIGNED_FORFEIT_TX_VSIZE; // @ 1 sat/vb
+	//TODO(stevenroose) improve this hack
+	let vtxo_fee_anchor_point = {
+		let mut point = vtxo.point();
+		point.vout += 1;
+		point
+	};
 	Transaction {
 		version: 2,
 		lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -27,6 +34,12 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 				sequence: Sequence::ZERO,
 				script_sig: ScriptBuf::new(),
 				witness: Witness::new(),
+			},
+			TxIn {
+				previous_output: vtxo_fee_anchor_point,
+				sequence: Sequence::ZERO,
+				script_sig: ScriptBuf::new(),
+				witness: util::dust_fee_anchor_witness(),
 			},
 		],
 		output: vec![

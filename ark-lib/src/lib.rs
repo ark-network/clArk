@@ -115,13 +115,15 @@ pub enum Vtxo {
 		spec: VtxoSpec,
 		/// The on-chain utxo of the onboard tx.
 		utxo: OutPoint,
-		exit_tx_signature: schnorr::Signature,
+		unlock_tx_signature: schnorr::Signature,
 	},
 	Round {
 		spec: VtxoSpec,
 		/// The on-chain utxo of the vtxo tree.
 		utxo: OutPoint,
 		leaf_idx: usize,
+		//TODO(stevenroose) reduce this to just storing the signatures
+		// and calculate branch on exit
 		exit_branch: Vec<Transaction>,
 	},
 }

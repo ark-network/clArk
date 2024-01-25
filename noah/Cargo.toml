@@ -3,8 +3,13 @@ name = "ark-noah"
 version = "0.0.0"
 edition = "2021"
 
+[lib]
+name = "noah"
+path = "src/lib.rs"
+
 [[bin]]
 name = "noah"
+path = "src/bin/noah/main.rs"
 
 [dependencies]
 ark-lib = { path = "../ark-lib" }
@@ -13,6 +18,8 @@ arkd-rpc-client = { path = "../arkd-rpc-client" }
 anyhow.workspace = true
 lazy_static.workspace = true
 log.workspace = true
+env_logger.workspace = true
+clap.workspace = true
 serde.workspace = true
 ciborium.workspace = true
 bitcoin.workspace = true

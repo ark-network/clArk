@@ -81,12 +81,12 @@ pub async fn run_round_scheduler(
 
 	'round: loop {
 		tokio::time::sleep(cfg.round_interval).await;
-		let round_id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() %
+		let round_id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() /
 			cfg.round_interval.as_secs();
 		info!("Starting round {}", round_id);
 
 		// Start new round, announce.
-		app.round_event_tx.send(RoundEvent::Start { id: round_id })?;
+		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id });
 
 		// In this loop we will try to finish the round and make new attempts.
 		let mut allowed_inputs = HashSet::new();
@@ -98,11 +98,12 @@ pub async fn run_round_scheduler(
 			let mut nonces = Vec::<Vec<musig::MusigPubNonce>>::new();
 
 			// Start receiving payments.
+			trace!("Starting receiving payments...");
 			let timeout = tokio::time::sleep(cfg.round_submit_time);
 			tokio::pin!(timeout);
 			'receive: loop {
 				tokio::select! {
-					_ = &mut timeout => break 'receive,
+					() = &mut timeout => break 'receive,
 					input = round_input_rx.recv() => match input.expect("broken channel") {
 						RoundInput::RegisterPayment { inputs, outputs, cosign_pubkey, public_nonces } => {
 							//TODO(stevenroose) verify ownership over inputs
@@ -137,6 +138,10 @@ pub async fn run_round_scheduler(
 					}
 				}
 			}
+			if all_inputs.is_empty() || all_outputs.is_empty() {
+				info!("No payments this round, sitting it out...");
+				continue 'round;
+			}
 			info!("Received {} inputs and {} outputs for round", all_inputs.len(), all_outputs.len());
 			// Make sure we don't allow other inputs next attempt.
 			allowed_inputs.clear();
@@ -160,7 +165,7 @@ pub async fn run_round_scheduler(
 			);
 
 			// Build round tx.
-			app.sync_onchain_wallet().context("error syncing onchain wallet")?;
+			app.sync_onchain_wallet().await.context("error syncing onchain wallet")?;
 			//TODO(stevenroose) think about if we can release lock sooner
 			let mut wallet = app.wallet.lock().await;
 			let mut round_tx_psbt = {
@@ -215,14 +220,14 @@ pub async fn run_round_scheduler(
 			}
 
 			// Send out proposal to signers.
-			app.round_event_tx.send(RoundEvent::Proposal {
+			let _ = app.round_event_tx.send(RoundEvent::Proposal {
 				id: round_id,
 				vtxos_spec: vtxos_spec.clone(),
 				round_tx: round_tx.clone(),
 				vtxos_signers: cosigners.iter().copied().collect(),
 				vtxos_agg_nonces: agg_vtxo_nonces.clone(),
 				forfeit_nonces: forfeit_pub_nonces.clone(),
-			})?;
+			});
 
 			// Wait for signatures from users.
 			let mut vtxo_part_sigs = HashMap::with_capacity(cosigners.len());
@@ -238,6 +243,7 @@ pub async fn run_round_scheduler(
 								warn!("Received signatures from non-signer: {}", vtxo_pubkey);
 								continue 'receive;
 							}
+							trace!("Received signatures from cosigner {}", vtxo_pubkey);
 
 							//TODO(stevenroose) validate partial signatures
 							vtxo_part_sigs.insert(vtxo_pubkey, vtxo_signatures);
@@ -260,8 +266,16 @@ pub async fn run_round_scheduler(
 			}
 
 			//TODO(stevenroose) kick out signers that didn't sign and retry
-			assert_eq!(cosigners.len(), vtxo_part_sigs.len());
-			assert_eq!(forfeit_part_sigs.len(), all_inputs.len());
+			if cosigners.len() - 1 != vtxo_part_sigs.len() {
+				error!("Not enough vtxo partial signatures! ({} != {})",
+					cosigners.len() - 1, vtxo_part_sigs.len());
+				continue 'round;
+			}
+			if forfeit_part_sigs.len() != all_inputs.len() {
+				error!("Not enough forfeit partial signatures! ({} != {})",
+					forfeit_part_sigs.len(), all_inputs.len());
+				continue 'round;
+			}
 
 			// Finish the forfeit signatures.
 			let mut forfeit_sigs = HashMap::with_capacity(all_inputs.len());
@@ -325,17 +339,19 @@ pub async fn run_round_scheduler(
 			drop(wallet); // we no longer need the lock
 
 			// Broadcast over bitcoind.
+			debug!("Broadcasting round tx {}", round_tx.txid());
 			let bc = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&app.bitcoind, &round_tx);
 			if let Err(e) = bc {
 				warn!("Couldn't broadcast round tx: {}", e);
 			}
 
 			// Send out the finished round to users.
-			app.round_event_tx.send(RoundEvent::Finished {
+			trace!("Sending out finish event.");
+			let _ = app.round_event_tx.send(RoundEvent::Finished {
 				id: round_id,
 				vtxos: signed_vtxos.clone(),
 				round_tx: round_tx.clone(),
-			})?;
+			});
 
 
 			// Store forfeit txs and round info in database.
@@ -351,17 +367,15 @@ pub async fn run_round_scheduler(
 						ForfeitVtxo::Round { spec, round_id, point, leaf_idx, forfeit_sigs }
 					},
 				};
+				trace!("Storing forfeit vtxo for vtxo {}", point);
 				app.db.store_forfeit_vtxo(ff)?;
 			}
 
-			app.db.store_round(round_tx, signed_vtxos)?;
+			trace!("Storing round result");
+			app.db.store_round(round_tx.clone(), signed_vtxos)?;
 
+			info!("Finished round {} with tx {}", round_id, round_tx.txid());
 			break 'attempt;
 		}
-
-
-		break 'round;
 	}
-
-	Ok(())
 }

@@ -49,12 +49,12 @@ impl VtxoTreeSpec {
 		exit_delta: u16,
 	) -> VtxoTreeSpec {
 		VtxoTreeSpec {
+			cosign_key_agg: Some(musig::key_agg(cosigners_with_asp.iter().copied())),
 			cosigners: cosigners_with_asp,
 			destinations: destinations,
 			asp_key: asp_key,
 			expiry_height: expiry_height,
 			exit_delta: exit_delta,
-			cosign_key_agg: None,
 		}
 	}
 

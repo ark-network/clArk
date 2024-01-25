@@ -7,6 +7,8 @@ pub mod musig;
 pub mod onboard;
 pub mod tree;
 mod util;
+#[cfg(test)]
+mod napkin;
 
 
 use std::{fmt, io};

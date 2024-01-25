@@ -28,8 +28,7 @@ pub struct Wallet {
 
 impl Wallet {
 	pub fn create(network: Network, seed: [u8; 64], dir: &Path) -> anyhow::Result<Wallet> {
-		let db_path = dir.join("onchain_db");
-		fs::create_dir_all(&db_path).context("failed to crate onchain wallet dir")?;
+		let db_path = dir.join("onchain.db");
 		let db = Store::<bdk::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
 
 		//TODO(stevenroose) taproot?
@@ -43,7 +42,7 @@ impl Wallet {
 		// sync
 		// let electrum_client = electrum_client::Client::new("ssl://electrum.blockstream.info:60002").unwrap();
 		let bitcoind = bdk_bitcoind_rpc::bitcoincore_rpc::Client::new(
-			"127.0.0.1:8332".into(),
+			"127.0.0.1:18443".into(),
 			bdk_bitcoind_rpc::bitcoincore_rpc::Auth::UserPass("user".into(), "pass".into()),
 		).context("failed to create bitcoind rpc client")?;
 

@@ -291,9 +291,7 @@ pub async fn run_round_scheduler(
 					let connectors = connectors.connectors();
 					let mut sigs = Vec::with_capacity(all_inputs.len());
 					for (i, (conn, sec)) in connectors.zip(sec_nonces.into_iter()).enumerate() {
-						let (sighash, _) = ark::forfeit::forfeit_sighash(
-							&vtxo, conn,
-						);
+						let (sighash, _) = ark::forfeit::forfeit_sighash(&vtxo, conn);
 						let agg_nonce = musig::nonce_agg([user_nonces[i], pub_nonces[i]]);
 						let (_, sig) = musig::partial_sign(
 							[app.master_key.public_key(), vtxo.spec().user_pubkey],
@@ -301,6 +299,7 @@ pub async fn run_round_scheduler(
 							&app.master_key,
 							sec,
 							sighash.to_byte_array(),
+							Some(vtxo.spec().exit_taptweak().to_byte_array()),
 							Some(&[partial_sigs[i]]),
 						);
 						sigs.push(sig.expect("should be signed"));
@@ -324,6 +323,7 @@ pub async fn run_round_scheduler(
 					&app.master_key,
 					sec_nonce,
 					sighashes[i].to_byte_array(),
+					Some(vtxos_spec.cosign_taptweak().to_byte_array()),
 					Some(&others),
 				).1.expect("should be signed");
 				signatures.push(sig);

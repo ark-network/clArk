@@ -5,8 +5,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
 
 use bitcoin::{
-	Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, Txid, TxIn,
-	TxOut, Weight, Witness,
+	taproot, Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, Txid,
+	TxIn, TxOut, Weight, Witness,
 };
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{self, schnorr, KeyPair, PublicKey, SecretKey, XOnlyPublicKey};
@@ -127,12 +127,19 @@ impl VtxoTreeSpec {
 		util::timelock_sign(self.expiry_height.try_into().unwrap(), pk)
 	}
 
-	pub fn cosign_spk(&self) -> ScriptBuf {
+	pub fn cosign_taproot(&self) -> taproot::TaprootSpendInfo {
 		let cosign_key = musig::xonly_from(self.cosign_key_agg().agg_pk());
-		let node_spendinfo = TaprootBuilder::new()
+		TaprootBuilder::new()
 			.add_leaf(0, self.expiry_clause()).unwrap()
-			.finalize(&util::SECP, cosign_key).unwrap();
-		ScriptBuf::new_v1_p2tr_tweaked(node_spendinfo.output_key())
+			.finalize(&util::SECP, cosign_key).unwrap()
+	}
+
+	pub fn cosign_taptweak(&self) -> taproot::TapTweakHash {
+		self.cosign_taproot().tap_tweak()
+	}
+
+	pub fn cosign_spk(&self) -> ScriptBuf {
+		ScriptBuf::new_v1_p2tr_tweaked(self.cosign_taproot().output_key())
 	}
 
 	fn node_tx(&self, children: &[&Transaction]) -> Transaction {

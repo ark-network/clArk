@@ -207,11 +207,11 @@ impl<T> Tree<T> {
 	}
 
 	pub fn parent_of_with_idx(&self, idx: usize) -> Option<(&T, usize)> {
-		self.parent_idx_of(idx).map(|i| {
-			let child_idx = self.nodes[idx].children.iter()
+		self.parent_idx_of(idx).map(|parent_idx| {
+			let child_idx = self.nodes[parent_idx].children.iter()
 				.find(|c| **c == Some(idx)).copied().flatten()
 				.expect("broken tree");
-			(&self.nodes[i].elem, child_idx)
+			(&self.nodes[parent_idx].elem, child_idx)
 		})
 	}
 

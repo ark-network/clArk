@@ -1,4 +1,4 @@
 
 mod arkd;
-pub use arkd::*;
-pub use arkd::ark_service_server::{ArkService, ArkServiceServer};
+pub use self::arkd::*;
+pub use self::arkd::ark_service_server::{ArkService, ArkServiceServer};

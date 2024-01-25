@@ -106,7 +106,7 @@ pub fn unlock_tx_sighash(spec: &VtxoSpec, utxo: OutPoint) -> (TapSighash, Transa
 	};
 	let sighash = cache.taproot_key_spend_signature_hash(
 		0,
-		&sighash::Prevouts::One(0, &prev),
+		&sighash::Prevouts::All(&[&prev]),
 		sighash::TapSighashType::All,
 	).expect("sighash calc error");
 	(sighash, unlock_tx)

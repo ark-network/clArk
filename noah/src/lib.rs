@@ -1,13 +1,11 @@
-#![allow(unused)]
 
-#[macro_use]
-extern crate log;
+#[macro_use] extern crate log;
 
 mod database;
 mod onchain;
 
 
-use std::{fs, iter};
+use std::{env, fs, iter};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -41,6 +39,16 @@ pub struct Config {
 	pub asp_address: String,
 }
 
+impl Default for Config {
+	fn default() -> Config {
+		Config {
+			network: Network::Regtest,
+			datadir: env::current_dir().unwrap().join("noah-datadir"),
+			asp_address: "127.0.0.1:3535".parse().unwrap(),
+		}
+	}
+}
+
 pub struct Wallet {
 	config: Config,
 	db: database::Db,
@@ -54,6 +62,8 @@ pub struct Wallet {
 impl Wallet {
 	/// Create new wallet.
 	pub async fn create(config: Config) -> anyhow::Result<Wallet> {
+		info!("Creating new noah Wallet at {}", config.datadir.display());
+
 		// create dir if not exit, but check that it's empty
 		fs::create_dir_all(&config.datadir).context("can't create dir")?;
 		if fs::read_dir(&config.datadir).context("can't read dir")?.next().is_some() {
@@ -73,6 +83,8 @@ impl Wallet {
 
 	/// Open existing wallet.
 	pub async fn open(config: Config) -> anyhow::Result<Wallet> {
+		info!("Opening noah Wallet at {}", config.datadir.display());
+
 		// read mnemonic file
 		let mnemonic_path = config.datadir.join("mnemonic");
 		let mnemonic_str = fs::read_to_string(&mnemonic_path)
@@ -157,6 +169,8 @@ impl Wallet {
 		let tx = self.onchain.finish_tx(onboard_tx)?;
 		self.onchain.broadcast_tx(&tx)?;
 
+		info!("Onboard successfull");
+
 		Ok(())
 	}
 
@@ -170,11 +184,14 @@ impl Wallet {
 			if sum < destination.amount {
 				bail!("Balance too low");
 			} else if sum == destination.amount {
+				info!("No change, emptying wallet.");
 				None
 			} else {
+				let amount = sum - destination.amount;
+				info!("Adding change destinatioin for {}", amount);
 				Some(Destination {
 					pubkey: vtxo_key.public_key(),
-					amount: sum - destination.amount,
+					amount,
 				})
 			}
 		};
@@ -182,6 +199,7 @@ impl Wallet {
 		let mut events = self.asp.subscribe_rounds(rpc::Empty {}).await?.into_inner();
 
 		// Wait for the next round start.
+		trace!("Waiting for a round start.");
 		let mut round_id = loop {
 			match events.next().await.context("events stream broke")??.event.unwrap() {
 				rpc::round_event::Event::Start(rpc::RoundStart { round_id }) => break round_id,
@@ -206,6 +224,7 @@ impl Wallet {
 			};
 
 			// The round has now started. We can submit our payment.
+			trace!("Submitting payment request");
 			self.asp.submit_payment(rpc::SubmitPaymentRequest {
 				cosign_pubkey: cosign_key.public_key().serialize().to_vec(),
 				input_vtxos: input_vtxos.iter().map(|v| v.encode()).collect(),
@@ -305,6 +324,7 @@ impl Wallet {
 						None,
 					).0
 				}).collect::<Vec<_>>();
+			trace!("Sending signatures to ASP");
 			self.asp.provide_signatures(rpc::RoundSignatures {
 				forfeit: forfeit_signatures.into_iter().map(|(id, sigs)| {
 					rpc::ForfeitSignatures {
@@ -320,12 +340,13 @@ impl Wallet {
 			}).await?;
 
 			// Wait for the finishing of the round.
+			trace!("Waiting for round finish...");
 			let (vtxos, round_tx) = match events.next().await.context("events stream broke")??.event.unwrap() {
 				rpc::round_event::Event::Finished(f) => {
 					assert_eq!(f.round_id, round_id);
 					let vtxos = SignedVtxoTree::decode(&f.signed_vtxos)
 						.context("invalid vtxo tree from asp")?;
-					let tx = bitcoin::consensus::deserialize(&f.round_tx)
+					let tx = bitcoin::consensus::deserialize::<Transaction>(&f.round_tx)
 						.context("invalid round tx from asp")?;
 					(vtxos, tx)
 				},
@@ -340,6 +361,7 @@ impl Wallet {
 			};
 
 			// First we also broadcast the tx.
+			info!("Round finished, broadcasting round tx {}", round_tx.txid());
 			if let Err(e) = self.onchain.broadcast_tx(&round_tx) {
 				warn!("Couldn't broadcast round_tx: {}", e);
 			}
@@ -368,7 +390,7 @@ impl Wallet {
 					leaf_idx: leaf_idx,
 					exit_branch: exit_branch,
 				};
-				self.db.store_vtxo(vtxo).context("failed to store vtxo");
+				self.db.store_vtxo(vtxo).context("failed to store vtxo")?;
 			} else {
 				info!("We used up all our money..");
 			}

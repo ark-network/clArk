@@ -215,6 +215,7 @@ impl rpc::ArkService for Arc<App> {
 /// Run the public gRPC endpoint.
 pub async fn run_public_rpc_server(app: Arc<App>) -> anyhow::Result<()> {
 	let addr = app.config.public_rpc_address;
+	info!("Starting gRPC service on address {}", addr);
 	let server = rpc::ArkServiceServer::new(app);
 	tonic::transport::Server::builder()
 		.add_service(server)

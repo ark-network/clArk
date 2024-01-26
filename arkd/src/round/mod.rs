@@ -80,7 +80,15 @@ pub async fn run_round_scheduler(
 	let cfg = &app.config;
 
 	'round: loop {
-		tokio::time::sleep(cfg.round_interval).await;
+		// Sleep for the round interval, but discard all incoming messages.
+		tokio::pin! { let timeout = tokio::time::sleep(cfg.round_interval); }
+		'sleep: loop {
+			tokio::select! {
+				() = &mut timeout => break 'sleep,
+				_ = round_input_rx.recv() => {},
+			}
+		}
+
 		let round_id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() /
 			cfg.round_interval.as_secs();
 		info!("Starting round {}", round_id);
@@ -98,9 +106,7 @@ pub async fn run_round_scheduler(
 			let mut nonces = Vec::<Vec<musig::MusigPubNonce>>::new();
 
 			// Start receiving payments.
-			trace!("Starting receiving payments...");
-			let timeout = tokio::time::sleep(cfg.round_submit_time);
-			tokio::pin!(timeout);
+			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_submit_time); }
 			'receive: loop {
 				tokio::select! {
 					() = &mut timeout => break 'receive,
@@ -232,8 +238,7 @@ pub async fn run_round_scheduler(
 			// Wait for signatures from users.
 			let mut vtxo_part_sigs = HashMap::with_capacity(cosigners.len());
 			let mut forfeit_part_sigs = HashMap::with_capacity(all_inputs.len());
-			let timeout = tokio::time::sleep(cfg.round_sign_time);
-			tokio::pin!(timeout);
+			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_sign_time); }
 			'receive: loop {
 				tokio::select! {
 					_ = &mut timeout => break 'receive,
@@ -363,7 +368,7 @@ pub async fn run_round_scheduler(
 					Vtxo::Onboard { utxo, spec, .. } => {
 						ForfeitVtxo::Onboard { spec, utxo, forfeit_sigs }
 					},
-					Vtxo::Round { utxo, spec, leaf_idx, .. } => {
+					Vtxo::Round { spec, leaf_idx, .. } => {
 						ForfeitVtxo::Round { spec, round_id, point, leaf_idx, forfeit_sigs }
 					},
 				};

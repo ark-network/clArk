@@ -3,11 +3,11 @@
 use std::iter;
 
 use bitcoin::{
-	Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, Txid, TxIn,
-	TxOut, Weight, Witness,
+	Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn,
+	TxOut, Witness,
 };
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, schnorr, KeyPair, PublicKey, SecretKey};
+use bitcoin::secp256k1::{self, KeyPair, PublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighashType};
 
 use crate::util;
@@ -159,7 +159,7 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 				&sighash::Prevouts::All(&[&prevout]),
 				None,
 				None,
-				TapSighashType::All,
+				TapSighashType::Default,
 			).expect("sighash error");
 			// TODO(stevenroose) use from_digest here after secp version update
 			let msg = secp256k1::Message::from_slice(&sighash.to_byte_array()).unwrap();
@@ -212,6 +212,7 @@ impl<'a> iter::FusedIterator for ConnectorTxIter<'a> {}
 #[cfg(test)]
 mod test {
 	use super::*;
+	use bitcoin::Txid;
 	use rand;
 
 	#[test]

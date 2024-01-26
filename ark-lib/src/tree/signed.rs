@@ -228,7 +228,7 @@ impl VtxoTreeSpec {
 			SighashCache::new(el).taproot_key_spend_signature_hash(
 				0,
 				&sighash::Prevouts::All(&[prev]),
-				TapSighashType::All,
+				TapSighashType::Default,
 			).expect("sighash error")
 		}).collect()
 	}
@@ -293,7 +293,7 @@ impl SignedVtxoTree {
 
 #[cfg(test)]
 mod test {
-	use super::*;
+	
 
 	#[test]
 	fn test_node_tx_sizes() {

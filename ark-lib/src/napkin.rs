@@ -1,7 +1,7 @@
 
 use std::iter;
 
-use bitcoin::{Amount, Transaction, TxIn, TxOut, ScriptBuf, OutPoint, Txid, Witness, Script};
+use bitcoin::{Transaction, TxIn, TxOut, ScriptBuf, OutPoint, Txid, Witness, Script};
 use bitcoin::blockdata::opcodes;
 use bitcoin::hashes::Hash;
 

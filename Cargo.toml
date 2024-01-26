@@ -10,7 +10,7 @@ members = [
 # TODO(stevenroose) at some point probably move these inline
 [workspace.dependencies]
 # Rust stack
-anyhow = "1"
+anyhow = { version = "1.0", features = ["backtrace"] }
 lazy_static = "=1.4.0"
 log = "0.4.20"
 env_logger = "=0.10.1"

@@ -61,8 +61,11 @@ impl rpc::ArkService for Arc<App> {
 		req: tonic::Request<rpc::OnboardCosignRequest>,
 	) -> Result<tonic::Response<rpc::OnboardCosignResponse>, tonic::Status> {
 		let req = req.into_inner();
-		let user_part = ciborium::from_reader(&req.user_part[..])
+		let user_part = ciborium::from_reader::<ark::onboard::UserPart, _>(&req.user_part[..])
 			.map_err(|e| badarg!("invalid user part: {}", e))?;
+		if user_part.spec.asp_pubkey != self.master_key.public_key() {
+			return Err(badarg!("ASP public key is incorrect!"));
+		}
 		let asp_part = self.cosign_onboard(user_part);
 		Ok(tonic::Response::new(rpc::OnboardCosignResponse {
 			asp_part: {

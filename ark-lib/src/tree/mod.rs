@@ -3,7 +3,7 @@
 pub mod signed;
 
 
-use std::ptr;
+
 
 
 #[derive(Debug)]
@@ -265,7 +265,7 @@ impl<T> Tree<T> {
 		}
 	}
 
-	pub fn get_branch(&self, leaf_idx: usize) -> Vec<T> {
+	pub fn get_branch(&self, _leaf_idx: usize) -> Vec<T> {
 		unimplemented!();
 	}
 }

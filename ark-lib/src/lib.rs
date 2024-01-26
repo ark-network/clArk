@@ -82,6 +82,10 @@ pub struct VtxoSpec {
 	pub asp_pubkey: PublicKey,
 	pub expiry_height: u32,
 	pub exit_delta: u16,
+	/// The amount of the vtxo itself, this is either the unlock tx our the
+	/// vtxo tree output. It does not include budget for fees, so f.e. to
+	/// calculate the onboard amount needed for this vtxo, fee budget should
+	/// be added.
 	#[serde(with = "bitcoin::amount::serde::as_sat")]
 	pub amount: Amount,
 }
@@ -93,11 +97,10 @@ impl VtxoSpec {
 	}
 
 	fn exit_taproot(&self) -> taproot::TaprootSpendInfo {
-		let exit_timeout = util::delayed_sign(self.exit_delta, self.user_pubkey.x_only_public_key().0);
-		let combined = musig::combine_keys([self.user_pubkey, self.asp_pubkey]);
+		let exit_clause = util::delayed_sign(self.exit_delta, self.user_pubkey.x_only_public_key().0);
 		bitcoin::taproot::TaprootBuilder::new()
-			.add_leaf(0, exit_timeout).unwrap()
-			.finalize(&util::SECP, combined).unwrap()
+			.add_leaf(0, exit_clause).unwrap()
+			.finalize(&util::SECP, self.combined_pubkey()).unwrap()
 	}
 
 	pub fn exit_taptweak(&self) -> taproot::TapTweakHash {

@@ -1,25 +1,15 @@
-const DB_MAGIC: &str = "onchain_bdk";
-const STOP_GAP: usize = 50;
-const BATCH_SIZE: usize = 5;
 
-use std::fs;
-use std::io::Write;
+
 use std::path::Path;
-use std::str::FromStr;
 
 use anyhow::Context;
-use bdk::wallet::Update;
 use bdk::SignOptions;
-use bdk_electrum::{
-	electrum_client::{self, ElectrumApi},
-	ElectrumExt, ElectrumUpdate,
-};
 use bdk_file_store::Store;
-use bitcoin::{Address, Amount, BlockHash, Network, Transaction, Txid};
+use bitcoin::{bip32, Address, Amount, BlockHash, Network, Transaction, Txid};
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
-use bitcoin::bip32;
-use miniscript::Descriptor;
 
+
+const DB_MAGIC: &str = "onchain_bdk";
 
 pub struct Wallet {
 	wallet: bdk::Wallet<Store<'static, bdk::wallet::ChangeSet>>,
@@ -36,7 +26,7 @@ impl Wallet {
 		let edesc = format!("wpkh({}/84'/0'/0'/0/*)", xpriv);
 		let idesc = format!("wpkh({}/84'/0'/0'/1/*)", xpriv);
 
-		let mut wallet = bdk::Wallet::new_or_load(&edesc, Some(&idesc), db, network)
+		let wallet = bdk::Wallet::new_or_load(&edesc, Some(&idesc), db, network)
 			.context("failed to create or load bdk wallet")?;
 		
 		// sync
@@ -96,16 +86,18 @@ impl Wallet {
 	}
 
 	pub fn prepare_tx(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Psbt> {
-		let mut tx_builder = self.wallet.build_tx();
-		tx_builder
-			.add_recipient(dest.script_pubkey(), amount.to_sat())
-			.enable_rbf();
-		Ok(tx_builder.finish()?)
+		let mut b = self.wallet.build_tx();
+		b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
+		b.add_recipient(dest.script_pubkey(), amount.to_sat());
+		b.enable_rbf();
+		Ok(b.finish()?)
 	}
 
 	pub fn finish_tx(&mut self, mut psbt: Psbt) -> anyhow::Result<Transaction> {
-		let finalized = self.wallet.sign(&mut psbt, SignOptions::default())?;
+		let finalized = self.wallet.sign(&mut psbt, SignOptions::default())
+			.context("failed to sign")?;
 		assert!(finalized);
+		self.wallet.commit().context("error committing wallet")?;
 		Ok(psbt.extract_tx())
 	}
 
@@ -116,7 +108,7 @@ impl Wallet {
 	}
 
 	pub fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
-		let mut psbt = self.prepare_tx(dest, amount)?;
+		let psbt = self.prepare_tx(dest, amount)?;
 		let tx = self.finish_tx(psbt)?;
 		self.broadcast_tx(&tx)
 	}

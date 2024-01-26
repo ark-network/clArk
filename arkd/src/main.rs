@@ -18,7 +18,7 @@ async fn main() {
 		network: bitcoin::Network::Regtest,
 		public_rpc_address: "[::1]:35035".parse().unwrap(),
 		datadir: env::current_dir().unwrap().join("test/arkd/"),
-		round_interval: Duration::from_secs(10),
+		round_interval: Duration::from_secs(20),
 		round_submit_time: Duration::from_secs(2),
 		round_sign_time: Duration::from_secs(2),
 		nb_round_nonces: 100,

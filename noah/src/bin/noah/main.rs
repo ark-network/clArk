@@ -3,7 +3,6 @@
 
 use std::{env, fs};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use bitcoin::Amount;
 use bitcoin::secp256k1::PublicKey;

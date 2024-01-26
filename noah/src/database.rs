@@ -2,7 +2,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context};
-use bitcoin::consensus::encode;
+
 use sled::transaction as tx;
 
 use ark::{Vtxo, VtxoId};

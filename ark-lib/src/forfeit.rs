@@ -65,7 +65,9 @@ pub fn forfeit_sighash(vtxo: &Vtxo, connector: OutPoint) -> (TapSighash, Transac
 	};
 	let tx = create_forfeit_tx(vtxo, connector);
 	let sighash = SighashCache::new(&tx).taproot_key_spend_signature_hash(
-		0, &sighash::Prevouts::All(&[exit_prevout, connector_prevout]), TapSighashType::All,
+		0,
+		&sighash::Prevouts::All(&[exit_prevout, connector_prevout, util::dust_fee_anchor()]),
+		TapSighashType::Default,
 	).expect("sighash error");
 	(sighash, tx)
 }

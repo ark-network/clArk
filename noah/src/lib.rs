@@ -162,7 +162,7 @@ impl Wallet {
 			exit_delta: 144,
 			amount: amount,
 		};
-		let onboard_amount = amount + ark::onboard::onboard_fee();
+		let onboard_amount = amount + ark::onboard::onboard_surplus();
 		let addr = Address::from_script(&ark::onboard::onboard_spk(&spec), self.config.network).unwrap();
 
 		// We create the onboard tx template, but don't sign it yet.
@@ -171,6 +171,7 @@ impl Wallet {
 
 		// We ask the ASP to cosign our onboard unlock tx.
 		let (user_part, priv_user_part) = ark::onboard::new_user(spec, utxo);
+		trace!("User part for onboard: {:#?}", user_part);
 		let asp_part = {
 			let res = self.asp.request_onboard_cosign(arkd_rpc_client::OnboardCosignRequest {
 				user_part: {
@@ -184,10 +185,11 @@ impl Wallet {
 		};
 
 		// Store vtxo first before we actually make the on-chain tx.
-		let vtxo = ark::onboard::finish(user_part, priv_user_part, asp_part, &key); 
+		let vtxo = ark::onboard::finish(user_part, asp_part, priv_user_part, &key); 
 		self.db.store_vtxo(vtxo).context("db error storing vtxo")?;
 
 		let tx = self.onchain.finish_tx(onboard_tx)?;
+		trace!("Broadcasting onboard tx: {}", bitcoin::consensus::encode::serialize_hex(&tx));
 		self.onchain.broadcast_tx(&tx)?;
 
 		info!("Onboard successfull");
@@ -198,6 +200,7 @@ impl Wallet {
 	/// Exit all vtxo onto the chain.
 	pub async fn start_unilateral_exit(&mut self) -> anyhow::Result<()> {
 		let vtxos = self.db.get_all_vtxos()?;
+		info!("Starting unilateral exit of {} vtxos...", vtxos.len());
 		for vtxo in vtxos {
 			let id = vtxo.id();
 			match vtxo {
@@ -205,13 +208,13 @@ impl Wallet {
 					let unlock_tx = ark::onboard::create_unlock_tx(
 						&spec, utxo, Some(&unlock_tx_signature),
 					);
-					info!("Broadcasting unlock tx for vtxo {}: {}", id, unlock_tx.txid());
+					debug!("Broadcasting unlock tx for vtxo {}: {}", id, unlock_tx.txid());
 					if let Err(e) = self.onchain.broadcast_tx(&unlock_tx) {
 						error!("Error broadcasting unlock tx for onboard vtxo {}: {}", id, e);
 					}
 				},
 				Vtxo::Round { spec: _, utxo: _, leaf_idx: _, exit_branch } => {
-					info!("Broadcasting {} txs of exit branch for vtxo {}", exit_branch.len(), id);
+					debug!("Broadcasting {} txs of exit branch for vtxo {}", exit_branch.len(), id);
 					for tx in exit_branch {
 						if let Err(e) = self.onchain.broadcast_tx(&tx) {
 							error!("Error broadcasting exit branch tx {} for vtxo {}: {}",

@@ -3,7 +3,7 @@
 
 
 datadir=./test/bitcoindatadir
-rm -r $datadir
-mkdir -p $datadir
+# rm -r $datadir
+# mkdir -p $datadir
 
-bitcoind -regtest -datadir=./test/bitcoindatadir -rpcuser=user -rpcpassword=pass -server
+/home/steven/code/bitcoin/src/bitcoind -regtest -datadir=${datadir} -rpcuser=user -rpcpassword=pass -server -txindex 

@@ -7,7 +7,7 @@ use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoin::secp256k1::schnorr;
 use sled::transaction as tx;
 
-use ark::{Vtxo, VtxoId, VtxoSpec};
+use ark::{VtxoId, VtxoSpec};
 use ark::tree::signed::SignedVtxoTree;
 
 

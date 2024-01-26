@@ -21,6 +21,10 @@ pub fn pubkey_to(pk: PublicKey) -> zkp::PublicKey {
 	zkp::PublicKey::from_slice(&pk.serialize()).unwrap()
 }
 
+pub fn pubkey_from(pk: zkp::PublicKey) -> PublicKey {
+	PublicKey::from_slice(&pk.serialize()).unwrap()
+}
+
 pub fn seckey_to(sk: SecretKey) -> zkp::SecretKey {
 	zkp::SecretKey::from_slice(&sk.secret_bytes()).unwrap()
 }
@@ -43,68 +47,31 @@ pub fn key_agg<'a>(keys: impl IntoIterator<Item = PublicKey>) -> MusigKeyAggCach
 	MusigKeyAggCache::new(&SECP, &keys)
 }
 
-pub fn tweaked_key_agg<'a>(keys: impl IntoIterator<Item = PublicKey>, tweak: [u8; 32]) -> MusigKeyAggCache {
+/// Returns the key agg cache with the tweak applied and the resulting pubkey with the tweak
+/// applied.
+pub fn tweaked_key_agg<'a>(keys: impl IntoIterator<Item = PublicKey>, tweak: [u8; 32]) -> (MusigKeyAggCache, PublicKey) {
 	let mut keys = keys.into_iter().map(|k| pubkey_to(k)).collect::<Vec<_>>();
 	keys.sort_by_key(|k| k.serialize());
 	let mut ret = MusigKeyAggCache::new(&SECP, &keys);
-	ret.pubkey_xonly_tweak_add(&SECP, zkp::SecretKey::from_slice(&tweak).unwrap()).unwrap();
-	ret
+	let pk = ret.pubkey_xonly_tweak_add(&SECP, zkp::SecretKey::from_slice(&tweak).unwrap()).unwrap();
+	(ret, pubkey_from(pk))
 }
 
 pub fn combine_keys(keys: impl IntoIterator<Item = PublicKey>) -> XOnlyPublicKey {
 	xonly_from(key_agg(keys).agg_pk())
 }
 
-pub fn nonce_pair(keys: &KeyPair) -> (MusigSecNonce, MusigPubNonce) {
-	let session_id = MusigSessionId::assume_unique_per_nonce_gen(rand::random());
-	let kp = keypair_to(keys);
-
+pub fn nonce_pair(key: &KeyPair) -> (MusigSecNonce, MusigPubNonce) {
+	let kp = keypair_to(key);
 	zkp::new_musig_nonce_pair(
 		&SECP,
-		session_id,
+		MusigSessionId::assume_unique_per_nonce_gen(rand::random()),
 		None,
 		Some(kp.secret_key()),
 		kp.public_key(),
 		None,
 		Some(rand::random()),
-	).expect("error generating nonces")
-}
-
-/// Perform a deterministic partial sign for the given message and the
-/// given counterparty key and nonce.
-pub fn deterministic_partial_sign(
-	my_key: &KeyPair,
-	their_pubkeys: impl IntoIterator<Item = PublicKey>,
-	their_nonces: impl IntoIterator<Item = MusigPubNonce>,
-	msg: [u8; 32],
-	tweak: Option<[u8; 32]>,
-) -> (MusigPubNonce, MusigPartialSignature) {
-	let my_pubkey = my_key.public_key();
-	//TODO(stevenroose) consider taking keypair for efficiency
-	let keypair = zkp::Keypair::from_seckey_slice(&SECP, &my_key.secret_bytes()).unwrap();
-	let agg = if let Some(tweak) = tweak {
-		tweaked_key_agg(their_pubkeys.into_iter().chain(Some(my_pubkey)), tweak)
-	} else {
-		key_agg(their_pubkeys.into_iter().chain(Some(my_pubkey)))
-	};
-
-	let session_id = MusigSessionId::assume_unique_per_nonce_gen(rand::random());
-	let msg = zkp::Message::from_digest(msg);
-	let (sec_nonce, pub_nonce) = zkp::new_musig_nonce_pair(
-		&SECP,
-		session_id,
-		Some(&agg),
-		Some(seckey_to(my_key.secret_key())),
-		pubkey_to(my_pubkey),
-		Some(msg),
-		None,
-	).expect("asp nonce gen error");
-
-	let agg_nonce = MusigAggNonce::new(&SECP, &their_nonces.into_iter().chain(Some(pub_nonce)).collect::<Vec<_>>());
-	let session = MusigSession::new(&SECP, &agg, agg_nonce, msg);
-	let sig = session.partial_sign(&SECP, sec_nonce, &keypair, &agg)
-		.expect("asp partial sign error");
-	(pub_nonce, sig)
+	).expect("non-zero session id")
 }
 
 pub fn nonce_agg(pub_nonces: impl IntoIterator<Item = MusigPubNonce>) -> MusigAggNonce {
@@ -121,15 +88,15 @@ pub fn partial_sign(
 	other_sigs: Option<&[MusigPartialSignature]>,
 ) -> (MusigPartialSignature, Option<schnorr::Signature>) {
 	let agg = if let Some(tweak) = tweak {
-		tweaked_key_agg(pubkeys, tweak)
+		tweaked_key_agg(pubkeys, tweak).0
 	} else {
 		key_agg(pubkeys)
 	};
 
 	let msg = zkp::Message::from_digest(sighash);
 	let session = MusigSession::new(&SECP, &agg, agg_nonce, msg);
-	//TODO(stevenroose) consider taking keypair for efficiency
-	let my_sig = session.partial_sign(&SECP, sec_nonce, &keypair_to(&key), &agg).expect("musig partial sign error");
+	let my_sig = session.partial_sign(&SECP, sec_nonce, &keypair_to(&key), &agg)
+		.expect("nonce not reused");
 	let final_sig = if let Some(others) = other_sigs {
 		let mut sigs = Vec::with_capacity(others.len() + 1);
 		sigs.extend_from_slice(others);
@@ -139,6 +106,40 @@ pub fn partial_sign(
 		None
 	};
 	(my_sig, final_sig.map(sig_from))
+}
+
+/// Perform a deterministic partial sign for the given message and the
+/// given counterparty key and nonce.
+pub fn deterministic_partial_sign(
+	my_key: &KeyPair,
+	their_pubkeys: impl IntoIterator<Item = PublicKey>,
+	their_nonces: impl IntoIterator<Item = MusigPubNonce>,
+	msg: [u8; 32],
+	tweak: Option<[u8; 32]>,
+) -> (MusigPubNonce, MusigPartialSignature) {
+	//TODO(stevenroose) consider taking keypair for efficiency
+	let agg = if let Some(tweak) = tweak {
+		tweaked_key_agg(their_pubkeys.into_iter().chain(Some(my_key.public_key())), tweak).0
+	} else {
+		key_agg(their_pubkeys.into_iter().chain(Some(my_key.public_key())))
+	};
+
+	let msg = zkp::Message::from_digest(msg);
+	let (sec_nonce, pub_nonce) = zkp::new_musig_nonce_pair(
+		&SECP,
+		MusigSessionId::assume_unique_per_nonce_gen(rand::random()),
+		Some(&agg),
+		Some(seckey_to(my_key.secret_key())),
+		pubkey_to(my_key.public_key()),
+		Some(msg),
+		Some(rand::random()),
+	).expect("non-zero sessioon id");
+
+	let agg_nonce = MusigAggNonce::new(&SECP, &their_nonces.into_iter().chain(Some(pub_nonce)).collect::<Vec<_>>());
+	let session = MusigSession::new(&SECP, &agg, agg_nonce, msg);
+	let sig = session.partial_sign(&SECP, sec_nonce, &keypair_to(my_key), &agg)
+		.expect("nonce not reused");
+	(pub_nonce, sig)
 }
 
 //TODO(stevenroose) probably get rid of all this by having native byte serializers in secp

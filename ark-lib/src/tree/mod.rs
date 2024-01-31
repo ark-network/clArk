@@ -155,12 +155,9 @@ impl<T> Tree<T> {
 		while cursor < nodes.len() - 1 {
 			let mut children = [None; 4];
 			let mut nb_children = 0;
-			while nb_children < 4 {
-				if cursor >= nodes.len() {
-					break;
-				}
+			while cursor < nodes.len() && nb_children < 4 {
 				children[nb_children] = Some(cursor);
-				nodes[cursor].parent = Some(nodes.len());
+				nodes[cursor].parent = Some(nodes.len()); // idx of next node
 				cursor += 1;
 				nb_children += 1;
 			}
@@ -172,7 +169,7 @@ impl<T> Tree<T> {
 			let elem = combine_f(&refs);
 			nodes.push(Node { elem, children, parent: None });
 		}
-		
+
 		debug_assert!(nodes.len() <= estimated_size);
 		nodes.shrink_to_fit();
 		Tree { nodes, nb_leaves }
@@ -216,11 +213,11 @@ impl<T> Tree<T> {
 	}
 
 	pub fn parent_of_with_idx_mut(&mut self, idx: usize) -> Option<(&mut T, usize)> {
-		self.parent_idx_of(idx).map(|i| {
-			let child_idx = self.nodes[idx].children.iter()
+		self.parent_idx_of(idx).map(|parent_idx| {
+			let child_idx = self.nodes[parent_idx].children.iter()
 				.find(|c| **c == Some(idx)).copied().flatten()
 				.expect("broken tree");
-			(&mut self.nodes[i].elem, child_idx)
+			(&mut self.nodes[parent_idx].elem, child_idx)
 		})
 	}
 
@@ -228,14 +225,17 @@ impl<T> Tree<T> {
 		self.nodes.get(idx).map(|n| n.children.iter().filter(|c| c.is_some()).count())
 	}
 
-	pub fn child_of(&self, node_idx: usize, child_idx: usize) -> Option<&T> {
+	pub fn child_idx_of(&self, node_idx: usize, child_idx: usize) -> Option<usize> {
 		assert!(child_idx < 4);
-		self.nodes.get(node_idx).and_then(|n| n.parent).map(|idx| &self.nodes[idx].elem)
+		self.nodes.get(node_idx).and_then(|n| n.children[child_idx])
+	}
+
+	pub fn child_of(&self, node_idx: usize, child_idx: usize) -> Option<&T> {
+		self.child_idx_of(node_idx, child_idx).map(|idx| &self.nodes[idx].elem)
 	}
 
 	pub fn child_of_mut(&mut self, node_idx: usize, child_idx: usize) -> Option<&mut T> {
-		assert!(child_idx < 4);
-		self.nodes.get(node_idx).and_then(|n| n.children[child_idx]).map(|idx| &mut self.nodes[idx].elem)
+		self.child_idx_of(node_idx, child_idx).map(|idx| &mut self.nodes[idx].elem)
 	}
 
 	pub fn into_vec(self) -> Vec<T> {
@@ -277,9 +277,16 @@ mod test {
 
 	#[test]
 	fn test_simple_tree() {
-		// make a tree with 10 leaves.
-		let tree = Tree::new(iter::repeat(()).take(10), |_| ());
+		for n in 1..100 {
+			let tree = Tree::new(iter::repeat(()).take(n), |_| ());
 
-		println!("{:#?}", tree);
+			assert!(tree.nodes.iter().rev().skip(1).all(|n| n.parent.is_some()));
+			assert!(tree.nodes.iter().enumerate().skip(tree.nb_leaves).all(|(i, n)| {
+				n.children.iter().filter_map(|v| *v).all(|c| tree.nodes[c].parent == Some(i))
+			}));
+			assert!(tree.nodes.iter().enumerate().rev().skip(1).all(|(i, n)| {
+				tree.nodes[n.parent.unwrap()].children.iter().find(|c| **c == Some(i)).is_some()
+			}));
+		}
 	}
 }

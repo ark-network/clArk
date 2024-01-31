@@ -5,22 +5,22 @@ use std::{cmp, io};
 use bitcoin::{
 	taproot, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
-use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
+use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
-use bitcoin::taproot::{TaprootBuilder};
+use bitcoin::taproot::TaprootBuilder;
 
 use crate::{musig, util, Destination};
 use crate::tree::Tree;
 
 
 /// Size in vbytes for the leaf txs.
-const LEAF_TX_SIZE: u64 = 0;
+const LEAF_TX_VSIZE: u64 = 154;
 /// Size in vbytes for a node tx with radix 2.
-const NODE2_TX_SIZE: u64 = 0;
+const NODE2_TX_VSIZE: u64 = 154;
 /// Size in vbytes for a node tx with radix 3.
-const NODE3_TX_SIZE: u64 = 0;
+const NODE3_TX_VSIZE: u64 = 197;
 /// Size in vbytes for a node tx with radix 4.
-const NODE4_TX_SIZE: u64 = 0;
+const NODE4_TX_VSIZE: u64 = 240;
 
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -69,6 +69,7 @@ impl VtxoTreeSpec {
 		self.cosign_key_agg.as_ref().unwrap()
 	}
 
+	/// The aggregated cosigning key without any taptweak performed.
 	pub fn cosign_agg_pubkey(&self) -> XOnlyPublicKey {
 		musig::xonly_from(self.cosign_key_agg().agg_pk())
 	}
@@ -84,7 +85,7 @@ impl VtxoTreeSpec {
 
 		// all anchor dust + 1 sat/vb for minrelayfee
 		let leaf_extra = self.destinations.len() as u64 * util::DUST.to_sat()
-			+ self.destinations.len() as u64 * LEAF_TX_SIZE;
+			+ self.destinations.len() as u64 * LEAF_TX_VSIZE;
 
 		// total minrelayfee requirement for all intermediate nodes
 		let nodes_fee = {
@@ -92,11 +93,11 @@ impl VtxoTreeSpec {
 			let mut left = self.destinations.len();
 			while left > 1 {
 				let radix = cmp::min(left, 4);
-				left -= radix - 1;
+				left -= radix;
 				ret += match radix {
-					2 => NODE2_TX_SIZE,
-					3 => NODE3_TX_SIZE,
-					4 => NODE4_TX_SIZE,
+					2 => NODE2_TX_VSIZE,
+					3 => NODE3_TX_VSIZE,
+					4 => NODE4_TX_VSIZE,
 					_ => unreachable!(),
 				};
 			}
@@ -123,10 +124,9 @@ impl VtxoTreeSpec {
 	}
 
 	pub fn cosign_taproot(&self) -> taproot::TaprootSpendInfo {
-		let cosign_key = musig::xonly_from(self.cosign_key_agg().agg_pk());
 		TaprootBuilder::new()
 			.add_leaf(0, self.expiry_clause()).unwrap()
-			.finalize(&util::SECP, cosign_key).unwrap()
+			.finalize(&util::SECP, self.cosign_agg_pubkey()).unwrap()
 	}
 
 	pub fn cosign_taptweak(&self) -> taproot::TapTweakHash {
@@ -148,9 +148,21 @@ impl VtxoTreeSpec {
 				witness: Witness::new(),
 			}],
 			output: children.iter().map(|child| {
+				let is_leaf = child.output.len() == 2 && child.output[1] == util::dust_fee_anchor();
+				// We add vsize as if it was fee because 1 sat/vb.
+				let fee_budget = if is_leaf {
+					LEAF_TX_VSIZE
+				} else {
+					match child.output.len() {
+						2 => NODE2_TX_VSIZE,
+						3 => NODE3_TX_VSIZE,
+						4 => NODE4_TX_VSIZE,
+						n => unreachable!("node tx with {} children", n),
+					}
+				};
 				TxOut {
 					script_pubkey: self.cosign_spk(),
-					value: child.output.iter().map(|o| o.value).sum(),
+					value: child.output.iter().map(|o| o.value).sum::<u64>() + fee_budget,
 				}
 			}).collect(),
 		}
@@ -195,8 +207,8 @@ impl VtxoTreeSpec {
 
 		// Iterate over all nodes in reverse order and set the prevouts.
 		let mut cursor = tree.nb_nodes() - 1;
+		// This is the root, set to the tree's on-chain utxo.
 		tree.element_at_mut(cursor).unwrap().input[0].previous_output = utxo;
-		cursor -= 1;
 		while cursor >= tree.nb_leaves() {
 			let txid = tree.element_at(cursor).unwrap().txid();
 			let nb_children = tree.nb_children_of(cursor).unwrap();
@@ -226,9 +238,7 @@ impl VtxoTreeSpec {
 			};
 			let el = tree.element_at(idx).unwrap();
 			SighashCache::new(el).taproot_key_spend_signature_hash(
-				0,
-				&sighash::Prevouts::All(&[prev]),
-				TapSighashType::Default,
+				0, &sighash::Prevouts::All(&[prev]), TapSighashType::Default,
 			).expect("sighash error")
 		}).collect()
 	}
@@ -238,11 +248,15 @@ impl VtxoTreeSpec {
 pub struct SignedVtxoTree {
 	spec: VtxoTreeSpec,
 	utxo: OutPoint,
+	/// The signatures for the txs as they are layed out in the tree,
+	/// from the leaves up to the root.
 	signatures: Vec<schnorr::Signature>,
 }
 
 impl SignedVtxoTree {
-	pub fn new(spec: VtxoTreeSpec, utxo: OutPoint, signatures: Vec<schnorr::Signature>) -> SignedVtxoTree {
+	/// We expect the signatures from top to bottom, the root tx's first and the leaves last.
+	pub fn new(spec: VtxoTreeSpec, utxo: OutPoint, mut signatures: Vec<schnorr::Signature>) -> SignedVtxoTree {
+		signatures.reverse();
 		SignedVtxoTree { spec, utxo, signatures }
 	}
 
@@ -268,6 +282,20 @@ impl SignedVtxoTree {
 		tx.input[0].witness.push(&sig[..]);
 	}
 
+	/// Validate the signatures.
+	pub fn validate(&self) -> Result<(), String> {
+		let pk = self.spec.cosign_taproot().output_key().to_inner();
+		let sighashes = self.spec.sighashes(self.utxo);
+		for (i, (sighash, sig)) in sighashes.into_iter().rev().zip(self.signatures.iter()).enumerate() {
+			//TODO(stevenroose) once we bump secp, replace all Message::from_slice with from_digest
+			let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
+			util::SECP.verify_schnorr(sig, &msg, &pk)
+				.map_err(|e| format!("failed signature {}: sh {}; sig {}: {}", i, sighash, sig, e))?;
+		}
+		Ok(())
+	}
+
+	/// Construct the exit branch starting from the root ending in the leaf.
 	pub fn exit_branch(&self, leaf_idx: usize) -> Option<Vec<Transaction>> {
 		let tree = self.spec.build_unsigned_tree(self.utxo);
 		if leaf_idx >= tree.nb_leaves {
@@ -286,6 +314,7 @@ impl SignedVtxoTree {
 				break;
 			}
 		}
+		branch.reverse();
 
 		Some(branch)
 	}
@@ -293,9 +322,76 @@ impl SignedVtxoTree {
 
 #[cfg(test)]
 mod test {
-	
+	use super::*;
+
+	use std::str::FromStr;
+
+	use bitcoin::hashes::sha256;
+	use bitcoin::secp256k1::{self, rand, KeyPair};
 
 	#[test]
 	fn test_node_tx_sizes() {
+		let secp = secp256k1::Secp256k1::new();
+		let key1 = KeyPair::new(&secp, &mut rand::thread_rng()); // asp
+		let key2 = KeyPair::new(&secp, &mut rand::thread_rng());
+		let sha = sha256::Hash::from_str("4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a").unwrap();
+		let sig = secp.sign_schnorr(
+			&secp256k1::Message::from_slice(&sha[..]).unwrap(), &key1,
+		);
+		let dest = Destination {
+			pubkey: KeyPair::new(&secp, &mut rand::thread_rng()).public_key(),
+			amount: Amount::from_sat(100_000),
+		};
+		let point = "0000000000000000000000000000000000000000000000000000000000000001:1".parse().unwrap();
+
+		// For 2..5 we should pass all types of radixes.
+		let (mut had2, mut had3, mut had4) = (false, false, false);
+		for n in 2..5 {
+			let spec = VtxoTreeSpec::new(
+				vec![key1.public_key(), key2.public_key()],
+				vec![dest.clone(); n],
+				key1.public_key(),
+				100_000,
+				2016,
+			);
+			let unsigned = spec.build_unsigned_tree(point);
+			assert!(unsigned.iter().all(|n| !n.element.input[0].previous_output.is_null()));
+			let nb_nodes = unsigned.nb_nodes();
+			let signed = SignedVtxoTree::new(spec, point, vec![sig.clone(); nb_nodes]);
+			for m in 0..n {
+				let exit = signed.exit_branch(m).unwrap();
+
+				// Assert it's a valid chain.
+				let mut iter = exit.iter().enumerate().peekable();
+				while let Some((i, cur)) = iter.next() {
+					if let Some((_, next)) = iter.peek() {
+						assert_eq!(next.input[0].previous_output.txid, cur.txid(), "{}", i);
+					}
+				}
+
+				// Assert the node tx sizes match our pre-computed ones.
+				let mut iter = exit.iter().rev();
+				let leaf = iter.next().unwrap();
+				assert_eq!(leaf.vsize() as u64, LEAF_TX_VSIZE);
+				for node in iter {
+					match node.output.len() {
+						2 => {
+							assert_eq!(node.vsize() as u64, NODE2_TX_VSIZE);
+							had2 = true;
+						},
+						3 => {
+							assert_eq!(node.vsize() as u64, NODE3_TX_VSIZE);
+							had3 = true;
+						},
+						4 => {
+							assert_eq!(node.vsize() as u64, NODE4_TX_VSIZE);
+							had4 = true;
+						},
+						_ => unreachable!(),
+					}
+				}
+			}
+		}
+		assert!(had2 && had3 && had4);
 	}
 }

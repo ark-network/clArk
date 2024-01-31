@@ -133,7 +133,7 @@ pub fn deterministic_partial_sign(
 		pubkey_to(my_key.public_key()),
 		Some(msg),
 		Some(rand::random()),
-	).expect("non-zero sessioon id");
+	).expect("non-zero session id");
 
 	let agg_nonce = MusigAggNonce::new(&SECP, &their_nonces.into_iter().chain(Some(pub_nonce)).collect::<Vec<_>>());
 	let session = MusigSession::new(&SECP, &agg, agg_nonce, msg);

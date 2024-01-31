@@ -200,6 +200,15 @@ impl Wallet {
 	/// Exit all vtxo onto the chain.
 	pub async fn start_unilateral_exit(&mut self) -> anyhow::Result<()> {
 		let vtxos = self.db.get_all_vtxos()?;
+
+		//TODO(stevenroose) idea, each vtxo will have a fee anchor for us.
+		// We should here
+		// - collect all fee anchor outputs of broadcasted txs in a list
+		// - add up the vsize of all txs we broadcasted
+		// - create a new tx using our on-chain wallet that spends all anchors and
+		// has an absolute fee that pays our feerate (also todo) for the entire
+		// "package" vsize.
+
 		info!("Starting unilateral exit of {} vtxos...", vtxos.len());
 		for vtxo in vtxos {
 			let id = vtxo.id();
@@ -214,7 +223,8 @@ impl Wallet {
 					}
 				},
 				Vtxo::Round { spec: _, utxo: _, leaf_idx: _, exit_branch } => {
-					debug!("Broadcasting {} txs of exit branch for vtxo {}", exit_branch.len(), id);
+					debug!("Broadcasting {} txs of exit branch for vtxo {}: {:?}",
+						exit_branch.len(), id, exit_branch.iter().map(|t| t.txid()).collect::<Vec<_>>());
 					for tx in exit_branch {
 						if let Err(e) = self.onchain.broadcast_tx(&tx) {
 							error!("Error broadcasting exit branch tx {} for vtxo {}: {}",
@@ -243,7 +253,7 @@ impl Wallet {
 				None
 			} else {
 				let amount = sum - destination.amount;
-				info!("Adding change destinatioin for {}", amount);
+				info!("Adding change destination for {}", amount);
 				Some(Destination {
 					pubkey: vtxo_key.public_key(),
 					amount,
@@ -263,10 +273,12 @@ impl Wallet {
 		};
 
 		'round: loop {
-			debug!("Participating in round {}", round_id);
+			let cosign_key = KeyPair::new(&SECP, &mut rand::thread_rng());
+			debug!("Participating in round {} with cosign pubkey {}",
+				round_id, cosign_key.public_key(),
+			);
 
 			// Prepare round participation info.
-			let cosign_key = KeyPair::new(&SECP, &mut rand::thread_rng());
 			let (sec_nonces, pub_nonces) = {
 				let mut secs = Vec::with_capacity(self.ark_info.nb_round_nonces);
 				let mut pubs = Vec::with_capacity(self.ark_info.nb_round_nonces);
@@ -368,6 +380,7 @@ impl Wallet {
 
 			// Make vtxo signatures from top to bottom, just like sighashes are returned.
 			let sighashes = vtxo_tree.sighashes(vtxos_utxo);
+			trace!("sighashes: {:?}", sighashes);
 			assert_eq!(sighashes.len(), vtxo_agg_nonces.len());
 			let signatures = iter::zip(sec_nonces.into_iter(), iter::zip(sighashes, vtxo_agg_nonces))
 				.map(|(sec_nonce, (sighash, agg_nonce))| {
@@ -416,6 +429,11 @@ impl Wallet {
 				//TODO(stevenroose) make this robust
 				other => panic!("Unexpected message: {:?}", other),
 			};
+
+			// Validate the vtxo tree.
+			if let Err(e) = vtxos.validate() {
+				bail!("Received incorrect signed vtxo tree from asp: {}", e);
+			}
 
 			// First we also broadcast the tx.
 			info!("Round finished, broadcasting round tx {}", round_tx.txid());

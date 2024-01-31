@@ -8,6 +8,7 @@ use anyhow::Context;
 use bitcoin::{Amount, OutPoint, Transaction};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::sighash::TapSighash;
 
 use ark::{musig, Destination, Vtxo, VtxoId};
 use ark::connectors::ConnectorChain;
@@ -72,6 +73,40 @@ fn validate_payment(inputs: &[Vtxo], outputs: &[Destination]) -> bool {
 	true
 }
 
+//TODO(stevenroose) we call this method at least once for each user, potentially dossable,
+// so we should keep a cached version of all these variables for the entire round
+fn validate_partial_vtxo_sigs(
+	cosigners: impl IntoIterator<Item = PublicKey>,
+	agg_nonces: &[musig::MusigAggNonce],
+	sighashes: &[TapSighash],
+	taptweak: [u8; 32],
+	user_pubkey: PublicKey,
+	user_pub_nonces: &[musig::MusigPubNonce],
+	user_signatures: &[musig::MusigPartialSignature],
+) -> bool {
+	let key_agg = musig::tweaked_key_agg(cosigners, taptweak).0;
+	for i in 0..agg_nonces.len() {
+		let session = musig::MusigSession::new(
+			&musig::SECP,
+			&key_agg,
+			agg_nonces[i],
+			musig::zkp::Message::from_digest(sighashes[i].to_byte_array()),
+		);
+		let success = session.partial_verify(
+			&musig::SECP,
+			&key_agg,
+			user_signatures[i].clone(),
+			user_pub_nonces[i],
+			musig::pubkey_to(user_pubkey),
+		);
+		if !success {
+			debug!("User provided invalid partial vtxo sig for node {}", i);
+			return false;
+		}
+	}
+	true
+}
+
 /// This method is called from a tokio thread so it can be long-lasting.
 pub async fn run_round_scheduler(
 	app: Arc<App>,
@@ -103,7 +138,7 @@ pub async fn run_round_scheduler(
 			let mut all_outputs = Vec::<Destination>::new();
 			let mut cosigners = HashSet::<PublicKey>::new();
 			cosigners.insert(app.master_key.public_key());
-			let mut nonces = Vec::<Vec<musig::MusigPubNonce>>::new();
+			let mut vtxo_pub_nonces = HashMap::new();
 
 			// Start receiving payments.
 			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_submit_time); }
@@ -137,8 +172,9 @@ pub async fn run_round_scheduler(
 							//TODO(stevenroose) somehow check if a tree using these outputs
 							//will exceed the config.nb_round_nonces number of nodes
 							all_outputs.extend(outputs);
+							//TODO(stevenroose) handle duplicate cosign key
 							assert!(cosigners.insert(cosign_pubkey));
-							nonces.push(public_nonces);
+							vtxo_pub_nonces.insert(cosign_pubkey, public_nonces);
 						},
 						v => debug!("Received unexpected input: {:?}", v),
 					}
@@ -154,18 +190,26 @@ pub async fn run_round_scheduler(
 			allowed_inputs.extend(all_inputs.iter().map(|v| v.id()));
 
 			// Start vtxo tree and connector chain construction
+			//
+			// ****************************************************************
+			// * - We will always store vtxo tx data from top to bottom,
+			// *   meaning from the root tx down to the leaves.
+			// ****************************************************************
+
 			let tip = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&app.bitcoind)?;
+			let expiry = tip as u32 + cfg.vtxo_expiry_delta as u32;
+			debug!("Current tip is {}, so round vtxos will expire at {}", tip, expiry);
 			let vtxos_spec = VtxoTreeSpec::new(
 				cosigners.iter().copied().collect(),
 				all_outputs,
 				app.master_key.public_key(),
-				tip as u32 + cfg.vtxo_expiry_delta as u32,
+				expiry,
 				cfg.vtxo_exit_delta,
 			);
 			//TODO(stevenroose) this is super inefficient, improve this with direct getter
 			let nb_nodes = vtxos_spec.build_unsigned_tree(OutPoint::null()).nb_nodes();
-			//TODO(stevenroose) handle this better
-			assert!(nb_nodes < cfg.nb_round_nonces);
+			//TODO(stevenroose) handle this better to avoid obvious DoS
+			assert!(nb_nodes <= cfg.nb_round_nonces);
 			let connector_output = ConnectorChain::output(
 				all_inputs.len(), app.master_key.public_key(),
 			);
@@ -203,11 +247,13 @@ pub async fn run_round_scheduler(
 				for i in 0..nb_nodes {
 					buf.clear();
 					buf.push(pub_vtxo_nonces[i]);
-					buf.extend(nonces.iter().map(|nonces| nonces[i]));
+					buf.extend(vtxo_pub_nonces.values().map(|nonces| nonces[i]));
 					ret.push(musig::MusigAggNonce::new(&musig::SECP, &buf));
 				}
 				ret
 			};
+			let vtxo_sighashes = vtxos_spec.sighashes(vtxos_utxo);
+			assert_eq!(vtxo_sighashes.len(), agg_vtxo_nonces.len());
 
 			// Prepare nonces for forfeit txs.
 			// We need to prepare N nonces for each of N inputs.
@@ -245,13 +291,25 @@ pub async fn run_round_scheduler(
 					input = round_input_rx.recv() => match input.expect("broken channel") {
 						RoundInput::Signatures { vtxo_pubkey, vtxo_signatures, forfeit } => {
 							if !cosigners.contains(&vtxo_pubkey) {
-								warn!("Received signatures from non-signer: {}", vtxo_pubkey);
+								debug!("Received signatures from non-signer: {}", vtxo_pubkey);
 								continue 'receive;
 							}
 							trace!("Received signatures from cosigner {}", vtxo_pubkey);
 
-							//TODO(stevenroose) validate partial signatures
-							vtxo_part_sigs.insert(vtxo_pubkey, vtxo_signatures);
+							if validate_partial_vtxo_sigs(
+								cosigners.iter().copied(),
+								&agg_vtxo_nonces,
+								&vtxo_sighashes,
+								vtxos_spec.cosign_taptweak().to_byte_array(),
+								vtxo_pubkey,
+								vtxo_pub_nonces.get(&vtxo_pubkey).expect("user is cosigner"),
+								&vtxo_signatures,
+							) {
+								vtxo_part_sigs.insert(vtxo_pubkey, vtxo_signatures);
+							} else {
+								debug!("Received invalid partial vtxo sigs from signer: {}", vtxo_pubkey);
+								continue 'receive;
+							}
 
 							//TODO(stevenroose) validate forfeit txs
 							let mut ok = true;
@@ -317,25 +375,39 @@ pub async fn run_round_scheduler(
 			//TODO(stevenroose) if missing forfeits, ban inputs and restart round
 
 			// Combine the vtxo signatures.
-			let sighashes = vtxos_spec.sighashes(vtxos_utxo);
-			assert_eq!(sighashes.len(), agg_vtxo_nonces.len());
-			let mut signatures = Vec::with_capacity(nb_nodes);
+			#[cfg(debug_assertions)]
+			let mut partial_sigs = Vec::with_capacity(nb_nodes);
+			let mut final_vtxo_sigs = Vec::with_capacity(nb_nodes);
 			for (i, sec_nonce) in sec_vtxo_nonces.into_iter().enumerate() {
 				let others = vtxo_part_sigs.values().map(|s| s[i].clone()).collect::<Vec<_>>();
-				let sig = musig::partial_sign(
+				let (_partial, final_sig) = musig::partial_sign(
 					cosigners.iter().copied(),
 					agg_vtxo_nonces[i],
 					&app.master_key,
 					sec_nonce,
-					sighashes[i].to_byte_array(),
+					vtxo_sighashes[i].to_byte_array(),
 					Some(vtxos_spec.cosign_taptweak().to_byte_array()),
 					Some(&others),
-				).1.expect("should be signed");
-				signatures.push(sig);
+				);
+				final_vtxo_sigs.push(final_sig.expect("we provided others"));
+				#[cfg(debug_assertions)]
+				partial_sigs.push(_partial);
 			}
+			debug_assert!(validate_partial_vtxo_sigs(
+				cosigners.iter().copied(),
+				&agg_vtxo_nonces,
+				&vtxo_sighashes,
+				vtxos_spec.cosign_taptweak().to_byte_array(),
+				app.master_key.public_key(),
+				&pub_vtxo_nonces,
+				&partial_sigs,
+			), "our own partial signatures were wrong");
 			
 			// Then construct the final signed vtxo tree.
-			let signed_vtxos = SignedVtxoTree::new(vtxos_spec, vtxos_utxo, signatures);
+			let signed_vtxos = SignedVtxoTree::new(vtxos_spec, vtxos_utxo, final_vtxo_sigs);
+			if let Err(e) = signed_vtxos.validate() {
+				bail!("We created an incorrect vtxo tree: {}", e);
+			}
 
 			// And sign the on-chain tx.
 			let finalized = wallet.sign(&mut round_tx_psbt, bdk::SignOptions::default())?;

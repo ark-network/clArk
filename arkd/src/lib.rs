@@ -1,5 +1,6 @@
 
 
+#[macro_use] extern crate anyhow;
 #[macro_use] extern crate log;
 #[macro_use] extern crate serde;
 
@@ -9,10 +10,10 @@ mod rpc;
 mod rpcserver;
 mod round;
 
-use std::{env};
+use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::str::FromStr;
 use std::time::Duration;
 

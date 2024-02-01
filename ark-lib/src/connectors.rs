@@ -10,7 +10,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{self, KeyPair, PublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighashType};
 
-use crate::util;
+use crate::{fee, util};
 
 
 /// The size in vbytes of each connector tx.
@@ -42,7 +42,7 @@ impl ConnectorChain {
 		assert_ne!(len, 0);
 		Amount::from_sat(
 			// We need n times dust for connectors.
-			len as u64 * util::DUST.to_sat()
+			len as u64 * fee::DUST.to_sat()
 			// Then we need minrelayfee to make sure we can pay for every tx in chain.
 			+ Self::total_vsize(len)
 		)
@@ -143,7 +143,7 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 				},
 				TxOut {
 					script_pubkey: self.spk.to_owned(),
-					value: util::DUST.to_sat(),
+					value: fee::DUST.to_sat(),
 				},
 			],
 		};
@@ -239,8 +239,8 @@ mod test {
 		chain.iter_signed_txs(&key).for_each(|t| assert_eq!(t.vsize() as u64, TX_SIZE));
 		let size = chain.iter_signed_txs(&key).map(|t| t.vsize() as u64).sum::<u64>();
 		assert_eq!(size, ConnectorChain::total_vsize(100));
-		chain.iter_unsigned_txs().for_each(|t| assert_eq!(t.output[1].value, util::DUST.to_sat()));
-		assert_eq!(util::DUST.to_sat(), chain.iter_unsigned_txs().last().unwrap().output[0].value);
+		chain.iter_unsigned_txs().for_each(|t| assert_eq!(t.output[1].value, fee::DUST.to_sat()));
+		assert_eq!(fee::DUST.to_sat(), chain.iter_unsigned_txs().last().unwrap().output[0].value);
 
 		let total_value = chain.iter_unsigned_txs().map(|t| t.output[1].value).sum::<u64>()
 			+ chain.iter_unsigned_txs().last().unwrap().output[0].value

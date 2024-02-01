@@ -7,7 +7,10 @@ use sled::transaction as tx;
 
 use ark::{Vtxo, VtxoId};
 
+use crate::exit;
+
 const VTXO_TREE: &str = "noah_vtxos";
+const CLAIM_INPUTS: &str = "claim_inputs";
 
 
 pub struct Db {
@@ -46,5 +49,21 @@ impl Db {
 
 	pub fn remove_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<Vtxo>> {
 		Ok(self.db.open_tree(VTXO_TREE)?.remove(&id)?.map(|b| Vtxo::decode(&b)).transpose()?)
+	}
+
+	/// This overrides the existing list of exit claim inputs with the new list.
+	pub fn store_claim_inputs(&self, inputs: &[exit::ClaimInput]) -> anyhow::Result<()> {
+		let mut buf = Vec::new();
+		ciborium::into_writer(&inputs, &mut buf).unwrap();
+		self.db.insert(CLAIM_INPUTS, buf)?;
+		Ok(())
+	}
+
+	/// Gets the current list of exit claim inputs.
+	pub fn get_claim_inputs(&self) -> anyhow::Result<Vec<exit::ClaimInput>> {
+		match self.db.get(CLAIM_INPUTS)? {
+			Some(buf) => Ok(ciborium::from_reader(&buf[..]).expect("corrupt db")),
+			None => Ok(Vec::new()),
+		}
 	}
 }

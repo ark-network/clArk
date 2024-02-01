@@ -2,6 +2,7 @@
 #[macro_use] extern crate serde;
 
 pub mod connectors;
+pub mod fee;
 pub mod forfeit;
 pub mod musig;
 pub mod onboard;

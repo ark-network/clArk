@@ -11,7 +11,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{self, schnorr, KeyPair};
 use bitcoin::sighash::{self, SighashCache, TapSighash};
 
-use crate::{musig, util, Vtxo, VtxoSpec};
+use crate::{fee, musig, util, Vtxo, VtxoSpec};
 
 
 /// The total signed tx vsize of an unlock tx.
@@ -42,7 +42,7 @@ pub fn onboard_spk(spec: &VtxoSpec) -> ScriptBuf {
 
 /// The additional amount that needs to be sent into the onboard tx.
 pub fn onboard_surplus() -> Amount {
-	util::DUST + Amount::from_sat(UNLOCK_TX_VSIZE as u64) // 1 sat/vb
+	fee::DUST + Amount::from_sat(UNLOCK_TX_VSIZE as u64) // 1 sat/vb
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ pub fn create_unlock_tx(
 				script_pubkey: spec.exit_spk(),
 				value: spec.amount.to_sat(),
 			},
-			util::dust_fee_anchor(),
+			fee::dust_anchor(),
 		],
 	}
 }

@@ -3,7 +3,7 @@
 use bitcoin::{OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 
-use crate::{util, Vtxo};
+use crate::{fee, util, Vtxo};
 use crate::connectors::ConnectorChain;
 
 
@@ -39,7 +39,7 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 				previous_output: vtxo_fee_anchor_point,
 				sequence: Sequence::ZERO,
 				script_sig: ScriptBuf::new(),
-				witness: util::dust_fee_anchor_witness(),
+				witness: fee::dust_anchor_witness(),
 			},
 		],
 		output: vec![
@@ -47,7 +47,7 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 				value: leftover,
 				script_pubkey: ScriptBuf::new_v1_p2tr(&util::SECP, vtxo.spec().combined_pubkey(), None),
 			},
-			util::dust_fee_anchor(),
+			fee::dust_anchor(),
 		],
 	}
 }
@@ -61,12 +61,12 @@ pub fn forfeit_sighash(vtxo: &Vtxo, connector: OutPoint) -> (TapSighash, Transac
 	};
 	let connector_prevout = TxOut {
 		script_pubkey: ConnectorChain::output_script(spec.asp_pubkey),
-		value: util::DUST.to_sat(),
+		value: fee::DUST.to_sat(),
 	};
 	let tx = create_forfeit_tx(vtxo, connector);
 	let sighash = SighashCache::new(&tx).taproot_key_spend_signature_hash(
 		0,
-		&sighash::Prevouts::All(&[exit_prevout, connector_prevout, util::dust_fee_anchor()]),
+		&sighash::Prevouts::All(&[exit_prevout, connector_prevout, fee::dust_anchor()]),
 		TapSighashType::Default,
 	).expect("sighash error");
 	(sighash, tx)

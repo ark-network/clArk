@@ -9,7 +9,7 @@ use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::TaprootBuilder;
 
-use crate::{musig, util, Destination};
+use crate::{fee, musig, util, Destination};
 use crate::tree::Tree;
 
 
@@ -84,7 +84,7 @@ impl VtxoTreeSpec {
 		let dest_sum = self.destinations.iter().map(|d| d.amount.to_sat()).sum::<u64>();
 
 		// all anchor dust + 1 sat/vb for minrelayfee
-		let leaf_extra = self.destinations.len() as u64 * util::DUST.to_sat()
+		let leaf_extra = self.destinations.len() as u64 * fee::DUST.to_sat()
 			+ self.destinations.len() as u64 * LEAF_TX_VSIZE;
 
 		// total minrelayfee requirement for all intermediate nodes
@@ -148,7 +148,7 @@ impl VtxoTreeSpec {
 				witness: Witness::new(),
 			}],
 			output: children.iter().map(|child| {
-				let is_leaf = child.output.len() == 2 && child.output[1] == util::dust_fee_anchor();
+				let is_leaf = child.output.len() == 2 && child.output[1] == fee::dust_anchor();
 				// We add vsize as if it was fee because 1 sat/vb.
 				let fee_budget = if is_leaf {
 					LEAF_TX_VSIZE
@@ -196,7 +196,7 @@ impl VtxoTreeSpec {
 					script_pubkey: self.leaf_spk(destination),
 					value: destination.amount.to_sat(),
 				},
-				util::dust_fee_anchor(),
+				fee::dust_anchor(),
 			],
 		}
 	}

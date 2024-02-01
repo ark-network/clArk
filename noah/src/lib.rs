@@ -1,7 +1,10 @@
 
+#[macro_use] extern crate anyhow;
 #[macro_use] extern crate log;
+#[macro_use] extern crate serde;
 
 mod database;
+mod exit;
 mod onchain;
 
 
@@ -143,6 +146,7 @@ impl Wallet {
 		for vtxo in self.db.get_all_vtxos()? {
 			self.db.remove_vtxo(vtxo.id())?;
 		}
+		self.db.store_claim_inputs(&[])?;
 		Ok(())
 	}
 
@@ -166,6 +170,7 @@ impl Wallet {
 		let addr = Address::from_script(&ark::onboard::onboard_spk(&spec), self.config.network).unwrap();
 
 		// We create the onboard tx template, but don't sign it yet.
+		self.onchain.sync().context("sync error")?;
 		let onboard_tx = self.onchain.prepare_tx(addr, onboard_amount)?;
 		let utxo = OutPoint::new(onboard_tx.unsigned_tx.txid(), 0);
 
@@ -194,48 +199,6 @@ impl Wallet {
 
 		info!("Onboard successfull");
 
-		Ok(())
-	}
-
-	/// Exit all vtxo onto the chain.
-	pub async fn start_unilateral_exit(&mut self) -> anyhow::Result<()> {
-		let vtxos = self.db.get_all_vtxos()?;
-
-		//TODO(stevenroose) idea, each vtxo will have a fee anchor for us.
-		// We should here
-		// - collect all fee anchor outputs of broadcasted txs in a list
-		// - add up the vsize of all txs we broadcasted
-		// - create a new tx using our on-chain wallet that spends all anchors and
-		// has an absolute fee that pays our feerate (also todo) for the entire
-		// "package" vsize.
-
-		info!("Starting unilateral exit of {} vtxos...", vtxos.len());
-		for vtxo in vtxos {
-			let id = vtxo.id();
-			match vtxo {
-				Vtxo::Onboard { spec, utxo, unlock_tx_signature } => {
-					let unlock_tx = ark::onboard::create_unlock_tx(
-						&spec, utxo, Some(&unlock_tx_signature),
-					);
-					debug!("Broadcasting unlock tx for vtxo {}: {}", id, unlock_tx.txid());
-					if let Err(e) = self.onchain.broadcast_tx(&unlock_tx) {
-						error!("Error broadcasting unlock tx for onboard vtxo {}: {}", id, e);
-					}
-				},
-				Vtxo::Round { spec: _, utxo: _, leaf_idx: _, exit_branch } => {
-					debug!("Broadcasting {} txs of exit branch for vtxo {}: {:?}",
-						exit_branch.len(), id, exit_branch.iter().map(|t| t.txid()).collect::<Vec<_>>());
-					for tx in exit_branch {
-						if let Err(e) = self.onchain.broadcast_tx(&tx) {
-							error!("Error broadcasting exit branch tx {} for vtxo {}: {}",
-								tx.txid(), id, e,
-							);
-						}
-					}
-				},
-			}
-			//TODO(stevenroose) store something in db that we started this process
-		}
 		Ok(())
 	}
 
@@ -435,10 +398,10 @@ impl Wallet {
 				bail!("Received incorrect signed vtxo tree from asp: {}", e);
 			}
 
-			// First we also broadcast the tx.
+			// We also broadcast the tx, just to have it go around faster.
 			info!("Round finished, broadcasting round tx {}", round_tx.txid());
 			if let Err(e) = self.onchain.broadcast_tx(&round_tx) {
-				warn!("Couldn't broadcast round_tx: {}", e);
+				warn!("Couldn't broadcast round tx: {}", e);
 			}
 
 			// Now we have to extract our own vtxos from the tree.

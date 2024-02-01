@@ -5,11 +5,18 @@ use std::path::Path;
 use anyhow::Context;
 use bdk::SignOptions;
 use bdk_file_store::Store;
-use bitcoin::{bip32, Address, Amount, BlockHash, Network, Transaction, Txid};
+use bitcoin::{
+	bip32, psbt, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, Transaction, Txid,
+	Witness,
+};
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 
 
+const P2TR_DUST: u64 = 330;
+const P2WPKH_DUST: u64 = 294;
 const DB_MAGIC: &str = "onchain_bdk";
+
+const TX_ALREADY_IN_CHAIN_ERROR: i32 = -27;
 
 pub struct Wallet {
 	wallet: bdk::Wallet<Store<'static, bdk::wallet::ChangeSet>>,
@@ -85,10 +92,24 @@ impl Wallet {
 		Ok(Amount::from_sat(balance.total()))
 	}
 
+	/// Fee rate to use for regular txs like onboards.
+	fn regular_fee_rate(&self) -> bdk::FeeRate {
+		//TODO(stevenroose) get from somewhere
+		bdk::FeeRate::from_sat_per_vb(10.0)
+	}
+
+	/// Fee rate to use for urgent txs like exits.
+	fn urgent_fee_rate(&self) -> bdk::FeeRate {
+		//TODO(stevenroose) get from somewhere
+		bdk::FeeRate::from_sat_per_vb(100.0)
+	}
+
 	pub fn prepare_tx(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Psbt> {
+		let fee_rate = self.regular_fee_rate();
 		let mut b = self.wallet.build_tx();
 		b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
 		b.add_recipient(dest.script_pubkey(), amount.to_sat());
+		b.fee_rate(fee_rate);
 		b.enable_rbf();
 		Ok(b.finish()?)
 	}
@@ -102,9 +123,14 @@ impl Wallet {
 	}
 
 	pub fn broadcast_tx(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-		bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&self.bitcoind, tx)?;
 		// self.electrum.transaction_broadcast(&tx)?;
-		Ok(tx.txid())
+		match bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&self.bitcoind, tx) {
+			Ok(_) => Ok(tx.txid()),
+			Err(bdk_bitcoind_rpc::bitcoincore_rpc::Error::JsonRpc(
+				bdk_bitcoind_rpc::bitcoincore_rpc::jsonrpc::Error::Rpc(e))
+			) if e.code == TX_ALREADY_IN_CHAIN_ERROR => Ok(tx.txid()),
+			Err(e) => Err(e.into()),
+		}
 	}
 
 	pub fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
@@ -115,5 +141,76 @@ impl Wallet {
 
 	pub fn new_address(&mut self) -> anyhow::Result<Address> {
 		Ok(self.wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address)
+	}
+
+	fn add_anchors<A, B, C>(b: &mut bdk::TxBuilder<A, B, C>, anchors: &[OutPoint])
+	where 
+		B: bdk::wallet::coin_selection::CoinSelectionAlgorithm,
+		C: bdk::wallet::tx_builder::TxBuilderContext,
+	{
+		for utxo in anchors {
+			let psbt_in = psbt::Input {
+				witness_utxo: Some(ark::fee::dust_anchor()),
+				final_script_witness: Some(ark::fee::dust_anchor_witness()),
+				//TODO(stevenroose) BDK wants this here, but it shouldn't
+				non_witness_utxo: Some(Transaction {
+					version: 2,
+					lock_time: bitcoin::absolute::LockTime::ZERO,
+					input: vec![],
+					output: vec![ark::fee::dust_anchor(); utxo.vout as usize + 1],
+				}),
+				..Default::default()
+			};
+			b.add_foreign_utxo(*utxo, psbt_in, 33).expect("adding foreign utxo");
+		}
+	}
+
+	pub fn spend_fee_anchors(
+		&mut self,
+		anchors: &[OutPoint],
+		package_vsize: usize,
+	) -> anyhow::Result<Transaction> {
+		self.sync().context("sync error")?;
+
+		// Since BDK doesn't support adding extra weight for fees, we have to
+		// first build the tx regularly, and then build it again.
+		// Since we have to guarantee that we have enough money in the inputs,
+		// we will "fake" create an output on the first attempt. This might
+		// overshoot the fee, but we prefer that over undershooting it.
+
+		let urgent_fee_rate = self.urgent_fee_rate();
+		let package_fee = urgent_fee_rate.fee_vb(package_vsize);
+
+		// Since BDK doesn't allow tx without recipients, we add a drain output.
+		let addr = self.wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address;
+
+		let template_size = {
+			let mut b = self.wallet.build_tx();
+			Wallet::add_anchors(&mut b, anchors);
+			b.add_recipient(addr.script_pubkey(), P2WPKH_DUST);
+			b.add_recipient(ScriptBuf::new(), package_fee);
+			b.fee_rate(urgent_fee_rate);
+			let mut psbt = b.finish().context("failed to craft anchor spend tx")?;
+			let finalized = self.wallet.sign(&mut psbt, SignOptions::default())
+				.context("failed to sign")?;
+			assert!(finalized);
+			psbt.extract_tx().vsize()
+		};
+
+		let total_vsize = template_size + package_vsize;
+		let total_fee = self.urgent_fee_rate().fee_vb(total_vsize);
+
+		// Then build actual tx.
+		let mut b = self.wallet.build_tx();
+		Wallet::add_anchors(&mut b, anchors);
+		b.drain_to(addr.script_pubkey());
+		b.fee_absolute(total_fee);
+		let psbt = b.finish().context("failed to craft anchor spend tx")?;
+		let tx = self.finish_tx(psbt)?;
+
+		if let Err(e) = self.broadcast_tx(&tx) {
+			bail!("Failed to broadcast fee anchor spend: {}", e);
+		}
+		Ok(tx)
 	}
 }

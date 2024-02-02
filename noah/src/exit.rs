@@ -3,7 +3,7 @@ use std::io;
 use std::collections::HashSet;
 
 use anyhow::Context;
-use bitcoin::{secp256k1, sighash, taproot, OutPoint, Witness};
+use bitcoin::{secp256k1, sighash, taproot, Amount, OutPoint, Witness};
 
 use ark::{Vtxo, VtxoSpec};
 
@@ -170,8 +170,9 @@ impl Wallet {
 			info!("No inputs we can claim.");
 			return Ok(());
 		}
-		debug!("Claiming the following exits: {:?}",
-			inputs.iter().map(|i| i.utxo.to_string()).collect::<Vec<_>>(),
+		let total_amount = inputs.iter().map(|i| i.spec.amount).sum::<Amount>();
+		debug!("Claiming the following exits with total value of {}: {:?}",
+			total_amount, inputs.iter().map(|i| i.utxo.to_string()).collect::<Vec<_>>(),
 		);
 
 		let mut psbt = self.onchain.create_exit_claim_tx(&inputs)?;
@@ -222,6 +223,8 @@ impl Wallet {
 
 		// Then update the database and only set the remaining inputs as to do.
 		self.db.store_claim_inputs(&remaining).context("failed db update")?;
+
+		info!("Successfully claimed total value of {}", total_amount);
 
 		Ok(())
 	}

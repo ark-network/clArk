@@ -78,6 +78,16 @@ impl rpc::ArkService for Arc<App> {
 		}))
 	}
 
+	async fn get_fresh_rounds(
+		&self,
+		_req: tonic::Request<rpc::Empty>,
+	) -> Result<tonic::Response<rpc::FreshRounds>, tonic::Status> {
+		let ids = self.db.get_fresh_round_ids().map_err(|e| internal!("db error: {}", e))?;
+		Ok(tonic::Response::new(rpc::FreshRounds {
+			txids: ids.into_iter().map(|t| t.to_byte_array().to_vec()).collect(),
+		}))
+	}
+
 	async fn get_round(
 		&self,
 		req: tonic::Request<rpc::RoundId>,

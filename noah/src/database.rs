@@ -9,8 +9,14 @@ use ark::{Vtxo, VtxoId};
 
 use crate::exit;
 
+// Trees
+
 const VTXO_TREE: &str = "noah_vtxos";
+
+// Top-level entries
+
 const CLAIM_INPUTS: &str = "claim_inputs";
+const LAST_ARK_SYNC_HEIGHT: &str = "last_round_sync_height";
 
 
 pub struct Db {
@@ -40,6 +46,12 @@ impl Db {
 		Ok(())
 	}
 
+	pub fn get_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<Vtxo>> {
+		Ok(self.db.open_tree(VTXO_TREE)?.get(id)?.map(|b| {
+			Vtxo::decode(&b).expect("corrupt db: invalid vtxo")
+		}))
+	}
+
 	pub fn get_all_vtxos(&self) -> anyhow::Result<Vec<Vtxo>> {
 		self.db.open_tree(VTXO_TREE)?.iter().map(|v| {
 			let (_key, val) = v?;
@@ -65,5 +77,19 @@ impl Db {
 			Some(buf) => Ok(ciborium::from_reader(&buf[..]).expect("corrupt db")),
 			None => Ok(Vec::new()),
 		}
+	}
+
+	pub fn get_last_ark_sync_height(&self) -> anyhow::Result<u32> {
+		if let Some(b) = self.db.get(LAST_ARK_SYNC_HEIGHT)? {
+			assert_eq!(4, b.len());
+			Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+		} else {
+			Ok(0)
+		}
+	}
+
+	pub fn store_last_ark_sync_height(&self, height: u32) -> anyhow::Result<()> {
+		self.db.insert(LAST_ARK_SYNC_HEIGHT, height.to_be_bytes().to_vec())?;
+		Ok(())
 	}
 }

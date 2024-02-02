@@ -27,6 +27,12 @@ pub struct OnboardCosignResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FreshRounds {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub txids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RoundId {
     #[prost(bytes = "vec", tag = "1")]
     pub txid: ::prost::alloc::vec::Vec<u8>,
@@ -279,6 +285,28 @@ pub mod ark_service_client {
             let mut req = request.into_request();
             req.extensions_mut()
                 .insert(GrpcMethod::new("arkd.ArkService", "RequestOnboardCosign"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn get_fresh_rounds(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<tonic::Response<super::FreshRounds>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/GetFreshRounds",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "GetFreshRounds"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn get_round(

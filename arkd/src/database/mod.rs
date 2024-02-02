@@ -21,6 +21,7 @@ const ROUND_TREE: &str = "rounds";
 
 const MASTER_SEED: &str = "master_seed";
 const MASTER_MNEMONIC: &str = "master_mnemonic";
+const FRESH_ROUND_IDS: &str = "fresh_round_ids";
 
 
 pub struct Db {
@@ -131,6 +132,13 @@ impl Db {
 		if self.db.open_tree(ROUND_TREE)?.insert(round.id(), round.encode())?.is_some() {
 			warn!("Round with id {} already present!", round.id());
 		}
+
+		let mut fresh = self.get_fresh_round_ids()?;
+		fresh.push(round.id());
+		let mut buf = Vec::new();
+		ciborium::into_writer(&fresh, &mut buf).unwrap();
+		self.db.insert(FRESH_ROUND_IDS, buf)?;
+
 		Ok(())
 	}
 
@@ -140,30 +148,16 @@ impl Db {
 		}))
 	}
 
+	pub fn get_fresh_round_ids(&self) -> anyhow::Result<Vec<Txid>> {
+		Ok(self.db.get(FRESH_ROUND_IDS)?.map(|b| {
+			ciborium::from_reader(&b[..]).expect("corrupt db")
+		}).unwrap_or_default())
+	}
+
 	pub fn store_forfeit_vtxo(&self, vtxo: ForfeitVtxo) -> anyhow::Result<()> {
 		if self.db.open_tree(FORFEIT_VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?.is_some() {
 			warn!("Forfeit vtxo with id {} already present!", vtxo.id());
 		}
 		Ok(())
 	}
-
-	// pub fn get_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<StoredVtxo>> {
-	// 	Ok(if let Some(bytes) = self.db.open_tree(VTXO_TREE)?.get(id)? {
-	// 		Some(StoredVtxo::decode(&bytes).context("db corruption")?)
-	// 	} else {
-	// 		None
-	// 	})
-	// }
-
-	// pub fn register_onboard_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
-	// 	let id = vtxo.id();
-	// 	let stored = match vtxo {
-	// 		Vtxo::Onboard { spec, exit_tx_signature, .. } => StoredVtxo::Onboard {
-	// 			utxo: id.utxo(), spec, exit_tx_signature,
-	// 		},
-	// 		_ => bail!("vtxo was not an onboard vtxo"),
-	// 	};
-	// 	self.db.open_tree(VTXO_TREE)?.insert(id, stored.encode())?;
-	// 	Ok(())
-	// }
 }

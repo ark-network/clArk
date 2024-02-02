@@ -324,7 +324,16 @@ pub async fn run_round_scheduler(
 								}
 							}
 							if ok {
+								//TODO(stevenroose) actually check if the forfeit sigs are
+								//for actual inputs in the round
 								forfeit_part_sigs.extend(forfeit.into_iter());
+							}
+
+							// Check whether we have all and can skip the loop.
+							if forfeit_part_sigs.len() == all_inputs.len() &&
+								vtxo_part_sigs.len() == cosigners.len() - 1 {
+								debug!("We received all signatures, continuing round...");
+								break 'receive;
 							}
 						},
 						v => debug!("Received unexpected input: {:?}", v),
@@ -417,6 +426,7 @@ pub async fn run_round_scheduler(
 			let finalized = wallet.sign(&mut round_tx_psbt, bdk::SignOptions::default())?;
 			assert!(finalized);
 			let round_tx = round_tx_psbt.extract_tx();
+			wallet.commit()?;
 			drop(wallet); // we no longer need the lock
 
 			// Broadcast over bitcoind.

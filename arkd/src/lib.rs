@@ -137,16 +137,10 @@ impl App {
 		let jh = tokio::spawn(async move {
 			tokio::select! {
 				ret = rpcserver::run_public_rpc_server(app.clone()) => {
-					if let Err(ref e) = ret {
-						error!("Error from gRPC server: {}", e);
-					}
-					ret
+					ret.context("error from gRPC server")
 				},
 				ret = round::run_round_scheduler(app.clone(), round_input_rx) => {
-					if let Err(ref e) = ret {
-						error!("Error from round scheduler: {}", e);
-					}
-					ret
+					ret.context("error from round scheduler")
 				},
 			}
 		});

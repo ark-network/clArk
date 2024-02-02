@@ -317,8 +317,8 @@ pub async fn run_round_scheduler(
 
 							//TODO(stevenroose) validate forfeit txs
 							let mut ok = true;
-							for (id, (n, s)) in &forfeit {
-								if n.len() != all_inputs.len() || s.len() != all_inputs.len() {
+							for (id, (nonces, sigs)) in &forfeit {
+								if nonces.len() != all_inputs.len() || sigs.len() != all_inputs.len() {
 									warn!("User didn't provide enough forfeit sigs for {}", id);
 									ok = false;
 								}

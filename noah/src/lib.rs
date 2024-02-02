@@ -15,8 +15,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{bail, Context};
-use bitcoin::{bip32, secp256k1};
-use bitcoin::{Address, Amount, Network, OutPoint, Transaction};
+use bitcoin::{bip32, secp256k1, Address, Amount, Network, OutPoint, Transaction, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{rand, KeyPair, PublicKey};
 use tokio_stream::StreamExt;
@@ -137,7 +136,9 @@ impl Wallet {
 		self.onchain.sync()
 	}
 
-	pub async fn offchain_balance(&self) -> anyhow::Result<Amount> {
+	pub async fn offchain_balance(&mut self) -> anyhow::Result<Amount> {
+		self.sync_ark().await.context("ark sync error")?;
+
 		let mut sum = Amount::ZERO;
 		for vtxo in self.db.get_all_vtxos()? {
 			sum += vtxo.spec().amount;
@@ -206,7 +207,86 @@ impl Wallet {
 		Ok(())
 	}
 
+	pub fn vtxo_pubkey(&self) -> PublicKey {
+		self.vtxo_seed.to_keypair(&SECP).public_key()
+	}
+
+	fn add_new_vtxo(&mut self, vtxos: &SignedVtxoTree, leaf_idx: usize) -> anyhow::Result<()> {
+		let exit_branch = vtxos.exit_branch(leaf_idx).unwrap();
+		let dest = &vtxos.spec.destinations[leaf_idx];
+		let vtxo = Vtxo::Round {
+			spec: VtxoSpec {
+				user_pubkey: dest.pubkey,
+				asp_pubkey: self.ark_info.asp_pubkey,
+				expiry_height: vtxos.spec.expiry_height,
+				exit_delta: vtxos.spec.exit_delta,
+				amount: dest.amount,
+			},
+			utxo: vtxos.utxo,
+			leaf_idx: leaf_idx,
+			exit_branch: exit_branch,
+		};
+		if self.db.get_vtxo(vtxo.id()).ok().flatten().is_none() {
+			debug!("Storing new vtxo {} with value {}", vtxo.id(), vtxo.spec().amount);
+			self.db.store_vtxo(vtxo).context("failed to store vtxo")?;
+		}
+		Ok(())
+	}
+
+	/// Sync with the Ark and look for received vtxos.
+	pub async fn sync_ark(&mut self) -> anyhow::Result<()> {
+		//TODO(stevenroose) impl key derivation
+		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
+
+		//TODO(stevenroose) we won't do reorg handling here
+		let current_height = self.onchain.tip()?.0;
+		let last_sync_height = self.db.get_last_ark_sync_height()?;
+		let fresh_rounds = self.asp.get_fresh_rounds(rpc::Empty {}).await?.into_inner();
+
+		for txid in fresh_rounds.txids {
+			let txid = Txid::from_slice(&txid).context("invalid txid from asp")?;
+			let tx = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_raw_transaction_info(
+				self.onchain.bitcoind(), &txid, None,
+			)?;
+			//TODO(stevenroose) simple reorg handling would be to check for 6 confs here
+			if let Some(hash) = tx.blockhash {
+				let blk = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_header_info(
+					self.onchain.bitcoind(), &hash,
+				)?;
+				if blk.height <= last_sync_height as usize {
+					continue;
+				}
+			} else {
+				trace!("Syncing unconfirmed round {}", txid);
+			}
+			//TODO(stevenroose) we are thus doing mempool rounds multiple times
+
+			// Sync this round.
+			let req = rpc::RoundId { txid: txid.to_byte_array().to_vec() };
+			let round = self.asp.get_round(req).await?.into_inner();
+
+			let tree = SignedVtxoTree::decode(&round.signed_vtxos)
+				.context("invalid signed vtxo tree from asp")?;
+
+			for (idx, dest) in tree.spec.destinations.iter().enumerate() {
+				if dest.pubkey == vtxo_key.public_key() {
+					self.add_new_vtxo(&tree, idx)?;
+				}
+			}
+		}
+		
+		//TODO(stevenroose) we currently actually could accidentally be syncing
+		// a round multiple times because new blocks could have come in since we
+		// took current height
+
+		self.db.store_last_ark_sync_height(current_height)?;
+
+		Ok(())
+	}
+
 	pub async fn send_payment(&mut self, destination: Destination) -> anyhow::Result<()> {
+		self.sync_ark().await.context("ark sync error")?;
+
 		//TODO(stevenroose) impl key derivation
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
 
@@ -414,27 +494,14 @@ impl Wallet {
 			// Initially this will just be one, our change.
 			if let Some(change) = change {
 				let leaf_idx = {
-					let mut iter = vtxos.spec().find_leaf_idxs(&change);
+					let mut iter = vtxos.spec.find_leaf_idxs(&change);
 					let ret = iter.next().context("asp didn't include our change")?;
 					if iter.next().is_some() {
 						error!("Our change was included twice??");
 					}
 					ret
 				};
-				let exit_branch = vtxos.exit_branch(leaf_idx).unwrap();
-				let vtxo = Vtxo::Round {
-					spec: VtxoSpec {
-						user_pubkey: change.pubkey,
-						asp_pubkey: self.ark_info.asp_pubkey,
-						expiry_height: vtxos.spec().expiry_height,
-						exit_delta: vtxos.spec().exit_delta,
-						amount: change.amount,
-					},
-					utxo: vtxos_utxo,
-					leaf_idx: leaf_idx,
-					exit_branch: exit_branch,
-				};
-				self.db.store_vtxo(vtxo).context("failed to store vtxo")?;
+				self.add_new_vtxo(&vtxos, leaf_idx)?;
 			} else {
 				info!("We used up all our money..");
 			}

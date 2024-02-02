@@ -246,8 +246,8 @@ impl VtxoTreeSpec {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SignedVtxoTree {
-	spec: VtxoTreeSpec,
-	utxo: OutPoint,
+	pub spec: VtxoTreeSpec,
+	pub utxo: OutPoint,
 	/// The signatures for the txs as they are layed out in the tree,
 	/// from the leaves up to the root.
 	signatures: Vec<schnorr::Signature>,
@@ -270,10 +270,6 @@ impl SignedVtxoTree {
 		let mut ret: Self = ciborium::from_reader(bytes)?;
 		ret.spec.cosign_key_agg = Some(musig::key_agg(ret.spec.cosigners.iter().copied()));
 		Ok(ret)
-	}
-
-	pub fn spec(&self) -> &VtxoTreeSpec {
-		&self.spec
 	}
 
 	fn finalize_tx(tx: &mut Transaction, sig: &schnorr::Signature) {

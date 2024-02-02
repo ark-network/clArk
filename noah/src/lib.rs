@@ -59,9 +59,9 @@ pub struct Wallet {
 	config: Config,
 	db: database::Db,
 	onchain: onchain::Wallet,
-	asp: rpc::ArkServiceClient<tonic::transport::Channel>,
 	vtxo_seed: bip32::ExtendedPrivKey,
-	// ASP info
+	// ASP stuff
+	asp: rpc::ArkServiceClient<tonic::transport::Channel>,
 	ark_info: ArkInfo,
 }
 
@@ -126,7 +126,7 @@ impl Wallet {
 			}
 		};
 
-		Ok(Wallet { config, db, onchain, asp, vtxo_seed, ark_info })
+		Ok(Wallet { config, db, onchain, vtxo_seed, asp, ark_info })
 	}
 
 	pub fn get_new_onchain_address(&mut self) -> anyhow::Result<Address> {

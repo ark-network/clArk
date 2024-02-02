@@ -40,6 +40,10 @@ impl ClaimInput {
 impl Wallet {
 	/// Exit all vtxo onto the chain.
 	pub async fn start_unilateral_exit(&mut self) -> anyhow::Result<()> {
+		if let Err(e) = self.sync_ark().await {
+			warn!("Failed to sync incoming Ark payments, still doing exit: {}", e);
+		}
+
 		let vtxos = self.db.get_all_vtxos()?;
 
 		//TODO(stevenroose) idea, each vtxo will have a fee anchor for us.

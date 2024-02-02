@@ -27,13 +27,13 @@ pub struct Wallet {
 
 impl Wallet {
 	pub fn create(network: Network, seed: [u8; 64], dir: &Path) -> anyhow::Result<Wallet> {
-		let db_path = dir.join("onchain.db");
+		let db_path = dir.join("bdkwallet.db");
 		let db = Store::<bdk::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
 
 		//TODO(stevenroose) taproot?
 		let xpriv = bip32::ExtendedPrivKey::new_master(network, &seed).expect("valid seed");
-		let edesc = format!("wpkh({}/84'/0'/0'/0/*)", xpriv);
-		let idesc = format!("wpkh({}/84'/0'/0'/1/*)", xpriv);
+		let edesc = format!("tr({}/84'/0'/0'/0/*)", xpriv);
+		let idesc = format!("tr({}/84'/0'/0'/1/*)", xpriv);
 
 		let wallet = bdk::Wallet::new_or_load(&edesc, Some(&idesc), db, network)
 			.context("failed to create or load bdk wallet")?;
@@ -140,6 +140,7 @@ impl Wallet {
 	}
 
 	pub fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
+		self.sync().context("sync error")?;
 		let psbt = self.prepare_tx(dest, amount)?;
 		let tx = self.finish_tx(psbt)?;
 		self.broadcast_tx(&tx)

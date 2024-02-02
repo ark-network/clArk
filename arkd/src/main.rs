@@ -1,7 +1,7 @@
 
 #[macro_use] extern crate log;
 
-use std::{env, fs};
+use std::{env, fs, process};
 use std::time::Duration;
 
 use arkd::{App, Config};
@@ -31,7 +31,7 @@ async fn main() {
 	let (app, jh) = App::start(cfg).unwrap();
 	info!("arkd onchain address: {}", app.onchain_address().await.unwrap());
 	if let Err(e) = jh.await.unwrap() {
-		error!("Shutdown error from arkd: {}", e);
+		error!("Shutdown error from arkd: {:?}", e);
+		process::exit(1);
 	}
-
 }

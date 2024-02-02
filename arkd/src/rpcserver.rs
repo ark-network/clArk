@@ -52,6 +52,8 @@ impl rpc::ArkService for Arc<App> {
 			pubkey: self.master_key.public_key().serialize().to_vec(),
 			xonly_pubkey: self.master_key.public_key().x_only_public_key().0.serialize().to_vec(),
 			nb_round_nonces: self.config.nb_round_nonces as u32,
+			vtxo_exit_delta: self.config.vtxo_exit_delta as u32,
+			vtxo_expiry_delta: self.config.vtxo_expiry_delta as u32,
 		};
 		Ok(tonic::Response::new(ret))
 	}

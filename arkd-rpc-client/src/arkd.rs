@@ -7,6 +7,10 @@ pub struct ArkInfo {
     pub xonly_pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(uint32, tag = "3")]
     pub nb_round_nonces: u32,
+    #[prost(uint32, tag = "4")]
+    pub vtxo_exit_delta: u32,
+    #[prost(uint32, tag = "5")]
+    pub vtxo_expiry_delta: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

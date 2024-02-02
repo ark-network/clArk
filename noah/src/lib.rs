@@ -6,6 +6,7 @@
 mod database;
 mod exit;
 mod onchain;
+mod psbt;
 
 
 use std::{env, fs, iter};
@@ -34,6 +35,8 @@ lazy_static::lazy_static! {
 pub struct ArkInfo {
 	pub asp_pubkey: PublicKey,
 	pub nb_round_nonces: usize,
+	pub vtxo_expiry_delta: u16,
+	pub vtxo_exit_delta: u16,
 }
 
 pub struct Config {
@@ -118,6 +121,8 @@ impl Wallet {
 			ArkInfo {
 				asp_pubkey: PublicKey::from_slice(&res.pubkey).context("asp pubkey")?,
 				nb_round_nonces: res.nb_round_nonces as usize,
+				vtxo_expiry_delta: res.vtxo_expiry_delta as u16,
+				vtxo_exit_delta: res.vtxo_exit_delta as u16,
 			}
 		};
 
@@ -154,16 +159,15 @@ impl Wallet {
 	//
 	// NB we will spend a little more on-chain to cover minrelayfee.
 	pub async fn onboard(&mut self, amount: Amount) -> anyhow::Result<()> {
-		let current_height = self.onchain.tip()?.0;
 		//TODO(stevenroose) impl key derivation
-		let key = KeyPair::from_secret_key(
-			&SECP, &self.vtxo_seed.derive_priv(&SECP, &[0.into()]).unwrap().private_key,
-		);
+		let key = self.vtxo_seed.to_keypair(&SECP);
+
+		let current_height = self.onchain.tip()?.0;
 		let spec = ark::VtxoSpec {
 			user_pubkey: key.public_key(),
 			asp_pubkey: self.ark_info.asp_pubkey,
-			expiry_height: current_height + 14 * 144,
-			exit_delta: 144,
+			expiry_height: current_height + self.ark_info.vtxo_expiry_delta as u32,
+			exit_delta: self.ark_info.vtxo_exit_delta,
 			amount: amount,
 		};
 		let onboard_amount = amount + ark::onboard::onboard_surplus();
@@ -203,10 +207,12 @@ impl Wallet {
 	}
 
 	pub async fn send_payment(&mut self, destination: Destination) -> anyhow::Result<()> {
+		//TODO(stevenroose) impl key derivation
+		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
+
 		// Prepare the payment.
 		let input_vtxos = self.db.get_all_vtxos()?;
 		let vtxo_ids = input_vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();
-		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
 		let change = {
 			let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 			if sum < destination.amount {

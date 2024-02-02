@@ -108,7 +108,7 @@ pub fn create_unlock_tx(
 		input: vec![TxIn {
 			previous_output: utxo,
 			script_sig: ScriptBuf::new(),
-			sequence: Sequence::ZERO,
+			sequence: Sequence::MAX,
 			witness: {
 				let mut ret = Witness::new();
 				if let Some(sig) = signature {

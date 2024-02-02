@@ -141,6 +141,8 @@ pub async fn run_round_scheduler(
 			let mut vtxo_pub_nonces = HashMap::new();
 
 			// Start receiving payments.
+			//TODO(stevenroose) we need a check to see when we have all data we need so we can skip
+			// timeout
 			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_submit_time); }
 			'receive: loop {
 				tokio::select! {
@@ -282,6 +284,8 @@ pub async fn run_round_scheduler(
 			});
 
 			// Wait for signatures from users.
+			//TODO(stevenroose) we need a check to see when we have all data we need so we can skip
+			// timeout
 			let mut vtxo_part_sigs = HashMap::with_capacity(cosigners.len());
 			let mut forfeit_part_sigs = HashMap::with_capacity(all_inputs.len());
 			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_sign_time); }

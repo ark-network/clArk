@@ -97,10 +97,13 @@ impl VtxoSpec {
 		musig::combine_keys([self.user_pubkey, self.asp_pubkey])
 	}
 
-	fn exit_taproot(&self) -> taproot::TaprootSpendInfo {
-		let exit_clause = util::delayed_sign(self.exit_delta, self.user_pubkey.x_only_public_key().0);
+	pub fn exit_clause(&self) -> ScriptBuf {
+		util::delayed_sign(self.exit_delta, self.user_pubkey.x_only_public_key().0)
+	}
+
+	pub fn exit_taproot(&self) -> taproot::TaprootSpendInfo {
 		bitcoin::taproot::TaprootBuilder::new()
-			.add_leaf(0, exit_clause).unwrap()
+			.add_leaf(0, self.exit_clause()).unwrap()
 			.finalize(&util::SECP, self.combined_pubkey()).unwrap()
 	}
 

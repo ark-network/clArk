@@ -133,7 +133,7 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 			input: vec![TxIn {
 				previous_output: self.prev,
 				script_sig: ScriptBuf::new(),
-				sequence: Sequence::ZERO,
+				sequence: Sequence::MAX,
 				witness: Witness::new(),
 			}],
 			output: vec![

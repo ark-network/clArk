@@ -25,19 +25,19 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 		input: vec![
 			TxIn {
 				previous_output: vtxo.point(),
-				sequence: Sequence::ZERO,
+				sequence: Sequence::MAX,
 				script_sig: ScriptBuf::new(),
 				witness: Witness::new(),
 			},
 			TxIn {
 				previous_output: connector,
-				sequence: Sequence::ZERO,
+				sequence: Sequence::MAX,
 				script_sig: ScriptBuf::new(),
 				witness: Witness::new(),
 			},
 			TxIn {
 				previous_output: vtxo_fee_anchor_point,
-				sequence: Sequence::ZERO,
+				sequence: Sequence::MAX,
 				script_sig: ScriptBuf::new(),
 				witness: fee::dust_anchor_witness(),
 			},

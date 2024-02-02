@@ -21,6 +21,8 @@ message ArkInfo {
 	bytes pubkey = 1;
 	bytes xonly_pubkey = 2;
 	uint32 nb_round_nonces = 3;
+	uint32 vtxo_exit_delta = 4;
+	uint32 vtxo_expiry_delta = 5;
 }
 
 message OnboardCosignRequest {

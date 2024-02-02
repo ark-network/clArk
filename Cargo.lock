@@ -272,7 +272,7 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 [[package]]
 name = "bdk"
 version = "1.0.0-alpha.3"
-source = "git+https://github.com/vladimirfomene/bdk.git?rev=a4f28c079e3bc4500e8329aeed230d8100d38617#a4f28c079e3bc4500e8329aeed230d8100d38617"
+source = "git+https://github.com/stevenroose/bdk.git?rev=67602f5b33ea82775d94a28df9f3f66d2ca9aa19#67602f5b33ea82775d94a28df9f3f66d2ca9aa19"
 dependencies = [
  "bdk_chain",
  "bitcoin 0.30.0",
@@ -287,7 +287,7 @@ dependencies = [
 [[package]]
 name = "bdk_bitcoind_rpc"
 version = "0.2.0"
-source = "git+https://github.com/vladimirfomene/bdk.git?rev=a4f28c079e3bc4500e8329aeed230d8100d38617#a4f28c079e3bc4500e8329aeed230d8100d38617"
+source = "git+https://github.com/stevenroose/bdk.git?rev=67602f5b33ea82775d94a28df9f3f66d2ca9aa19#67602f5b33ea82775d94a28df9f3f66d2ca9aa19"
 dependencies = [
  "bdk_chain",
  "bitcoin 0.30.0",
@@ -297,7 +297,7 @@ dependencies = [
 [[package]]
 name = "bdk_chain"
 version = "0.7.0"
-source = "git+https://github.com/vladimirfomene/bdk.git?rev=a4f28c079e3bc4500e8329aeed230d8100d38617#a4f28c079e3bc4500e8329aeed230d8100d38617"
+source = "git+https://github.com/stevenroose/bdk.git?rev=67602f5b33ea82775d94a28df9f3f66d2ca9aa19#67602f5b33ea82775d94a28df9f3f66d2ca9aa19"
 dependencies = [
  "bitcoin 0.30.0",
  "miniscript",
@@ -307,7 +307,7 @@ dependencies = [
 [[package]]
 name = "bdk_electrum"
 version = "0.5.0"
-source = "git+https://github.com/vladimirfomene/bdk.git?rev=a4f28c079e3bc4500e8329aeed230d8100d38617#a4f28c079e3bc4500e8329aeed230d8100d38617"
+source = "git+https://github.com/stevenroose/bdk.git?rev=67602f5b33ea82775d94a28df9f3f66d2ca9aa19#67602f5b33ea82775d94a28df9f3f66d2ca9aa19"
 dependencies = [
  "bdk_chain",
  "electrum-client 0.18.0",
@@ -316,7 +316,7 @@ dependencies = [
 [[package]]
 name = "bdk_file_store"
 version = "0.3.0"
-source = "git+https://github.com/vladimirfomene/bdk.git?rev=a4f28c079e3bc4500e8329aeed230d8100d38617#a4f28c079e3bc4500e8329aeed230d8100d38617"
+source = "git+https://github.com/stevenroose/bdk.git?rev=67602f5b33ea82775d94a28df9f3f66d2ca9aa19#67602f5b33ea82775d94a28df9f3f66d2ca9aa19"
 dependencies = [
  "bdk_chain",
  "bincode",

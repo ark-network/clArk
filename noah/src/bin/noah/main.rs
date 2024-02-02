@@ -4,7 +4,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use bitcoin::Amount;
+use anyhow::Context;
+use bitcoin::{address, Address, Amount};
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 
@@ -45,6 +46,11 @@ enum Command {
 		amount: Amount,
 	},
 	#[command()]
+	SendOnchain {
+		address: Address<address::NetworkUnchecked>,
+		amount: Amount,
+	},
+	#[command()]
 	Send {
 		pubkey: PublicKey,
 		amount: Amount,
@@ -59,8 +65,7 @@ enum Command {
 	DropVtxos {},
 }
 
-#[tokio::main]
-async fn main() {
+async fn inner_main() -> anyhow::Result<()> {
 	env_logger::builder()
 		.filter_module("sled", log::LevelFilter::Off)
 		.filter_module("bitcoincore_rpc", log::LevelFilter::Trace)
@@ -72,42 +77,44 @@ async fn main() {
 	//TODO(stevenroose) somehow pass this in
 	let mut cfg = Config {
 		network: bitcoin::Network::Regtest,
-		datadir: cli.datadir.canonicalize().expect("canonicalizing path"),
+		datadir: cli.datadir.canonicalize().context("canonicalizing path")?,
 		asp_address: "http://[::1]:35035".parse().unwrap(),
 		..Default::default()
 	};
 
+	// Handle create command differently.
+	if let Command::Create { ref datadir, force } = cli.command {
+		let datadir = if let Some(datadir) = datadir {
+			fs::create_dir_all(&datadir).context("failed to create datadir")?;
+			datadir
+		} else {
+			&cli.datadir
+		}.canonicalize().context("error canonicalizing datadir")?;
+
+		if force {
+			fs::remove_dir_all(&datadir)?;
+		}
+
+		fs::create_dir_all(&datadir).context("failed to create datadir")?;
+		cfg.datadir = datadir;
+		let mut w = Wallet::create(cfg).await.context("error creating wallet")?;
+		info!("Onchain address: {}", w.get_new_onchain_address()?);
+		return Ok(());
+	}
+
+	let mut w = Wallet::open(cfg.clone()).await.context("error opening wallet")?;
 	match cli.command {
-		Command::Create { datadir, force } => {
-			let datadir = if let Some(datadir) = datadir {
-				fs::create_dir_all(&datadir).expect("failed to create datadir");
-				datadir
-			} else {
-				cli.datadir
-			}.canonicalize().expect("error canonicalizing datadir");
-
-			if force {
-				fs::remove_dir_all(&datadir).unwrap();
-			}
-
-			fs::create_dir_all(&datadir).expect("failed to create datadir");
-			cfg.datadir = datadir;
-			let mut w = Wallet::create(cfg).await.expect("error creating wallet");
-			info!("Onchain address: {}", w.get_new_onchain_address().unwrap());
-		},
+		Command::Create { .. } => unreachable!(),
 		Command::GetAddress { } => {
-			let mut w = Wallet::open(cfg).await.unwrap();
-			info!("Onchain address: {}", w.get_new_onchain_address().unwrap());
+			info!("Onchain address: {}", w.get_new_onchain_address()?);
 		},
 		Command::GetVtxoPubkey { } => {
-			let w = Wallet::open(cfg).await.unwrap();
 			info!("Vtxo pubkey: {}", w.vtxo_pubkey());
 		}
 		Command::Balance { } => {
-			let mut w = Wallet::open(cfg).await.unwrap();
-			info!("Onchain balance: {}", w.onchain_balance().unwrap());
-			info!("Offchain balance: {}", w.offchain_balance().await.unwrap());
-			let (claimable, unclaimable) = w.unclaimed_exits().await.unwrap();
+			info!("Onchain balance: {}", w.onchain_balance()?);
+			info!("Offchain balance: {}", w.offchain_balance().await?);
+			let (claimable, unclaimable) = w.unclaimed_exits().await?;
 			if !claimable.is_empty() {
 				let sum = claimable.iter().map(|i| i.spec.amount).sum::<Amount>();
 				info!("Got {} claimable exits with total value of {}", claimable.len(), sum);
@@ -118,29 +125,39 @@ async fn main() {
 			}
 		},
 		Command::Onboard { amount } => {
-			let mut w = Wallet::open(cfg).await.unwrap();
-			w.onboard(amount).await.unwrap();
+			w.onboard(amount).await?;
+		},
+		Command::SendOnchain { address, amount } => {
+			let addr = address.require_network(cfg.network).with_context(|| {
+				format!("address is not valid for configured network {}", cfg.network)
+			})?;
+			w.send_onchain(addr, amount)?;
 		},
 		Command::Send { pubkey, amount } => {
-			let mut w = Wallet::open(cfg).await.unwrap();
 			let dest = Destination { pubkey, amount };
-			w.send_payment(dest).await.unwrap();
+			w.send_payment(dest).await?;
 		},
 		Command::StartExit {  } => {
-			let mut w = Wallet::open(cfg).await.unwrap();
-			w.start_unilateral_exit().await.unwrap();
+			w.start_unilateral_exit().await?;
 		},
 		Command::ClaimExit {  } => {
-			let mut w = Wallet::open(cfg).await.unwrap();
-			w.claim_unilateral_exit().await.unwrap();
+			w.claim_unilateral_exit().await?;
 		},
 
 		// dev commands
 
 		Command::DropVtxos {  } => {
-			let w = Wallet::open(cfg).await.unwrap();
-			w.drop_vtxos().await.unwrap();
+			w.drop_vtxos().await?;
 			info!("Dropped all vtxos");
 		},
+	}
+	Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+	if let Err(e) = inner_main().await {
+		eprintln!("An error occurred: {}", e);
+		eprintln!("Backtrace: {:?}", e.backtrace());
 	}
 }

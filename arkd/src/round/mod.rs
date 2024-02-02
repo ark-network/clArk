@@ -225,14 +225,14 @@ pub async fn run_round_scheduler(
 				b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
 				b.add_recipient(vtxos_spec.cosign_spk(), vtxos_spec.total_required_value().to_sat());
 				b.add_recipient(connector_output.script_pubkey, connector_output.value);
-				b.fee_rate(bdk::FeeRate::from_sat_per_vb(100.0)); //TODO(stevenroose) fix
+				b.fee_rate(bdk::FeeRate::from_sat_per_vb(10.0)); //TODO(stevenroose) fix
 				b.finish().context("bdk failed to create round tx")?
 			};
 			let round_tx = round_tx_psbt.clone().extract_tx();
 			let vtxos_utxo = OutPoint::new(round_tx.txid(), 0);
 			let conns_utxo = OutPoint::new(round_tx.txid(), 1);
 
-			// Generate nonces and combine with user's nonces.
+			// Generate vtxo nonces and combine with user's nonces.
 			let (sec_vtxo_nonces, pub_vtxo_nonces) = {
 				let mut secs = Vec::with_capacity(nb_nodes);
 				let mut pubs = Vec::with_capacity(nb_nodes);

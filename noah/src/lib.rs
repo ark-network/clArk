@@ -38,6 +38,7 @@ pub struct ArkInfo {
 	pub vtxo_exit_delta: u16,
 }
 
+#[derive(Debug, Clone)]
 pub struct Config {
 	pub network: Network,
 	pub datadir: PathBuf,
@@ -181,7 +182,6 @@ impl Wallet {
 
 		// We ask the ASP to cosign our onboard unlock tx.
 		let (user_part, priv_user_part) = ark::onboard::new_user(spec, utxo);
-		trace!("User part for onboard: {:#?}", user_part);
 		let asp_part = {
 			let res = self.asp.request_onboard_cosign(arkd_rpc_client::OnboardCosignRequest {
 				user_part: {
@@ -284,6 +284,10 @@ impl Wallet {
 		Ok(())
 	}
 
+	pub fn send_onchain(&mut self, addr: Address, amount: Amount) -> anyhow::Result<Txid> {
+		Ok(self.onchain.send_money(addr, amount)?)
+	}
+
 	pub async fn send_payment(&mut self, destination: Destination) -> anyhow::Result<()> {
 		self.sync_ark().await.context("ark sync error")?;
 
@@ -340,7 +344,8 @@ impl Wallet {
 			};
 
 			// The round has now started. We can submit our payment.
-			trace!("Submitting payment request");
+			trace!("Submitting payment request with {} inputs and {} outputs",
+				input_vtxos.len(), 1 + change.is_some() as usize);
 			self.asp.submit_payment(rpc::SubmitPaymentRequest {
 				cosign_pubkey: cosign_key.public_key().serialize().to_vec(),
 				input_vtxos: input_vtxos.iter().map(|v| v.encode()).collect(),
@@ -405,7 +410,9 @@ impl Wallet {
 
 			// Make forfeit signatures.
 			let connectors = ConnectorChain::new(
-				forfeit_nonces.len(), conns_utxo, self.ark_info.asp_pubkey,
+				forfeit_nonces.values().next().unwrap().len(),
+				conns_utxo,
+				self.ark_info.asp_pubkey,
 			);
 			let forfeit_signatures = input_vtxos.iter().map(|v| {
 				let sigs = connectors.connectors().enumerate().map(|(i, conn)| {
@@ -429,7 +436,7 @@ impl Wallet {
 
 			// Make vtxo signatures from top to bottom, just like sighashes are returned.
 			let sighashes = vtxo_tree.sighashes(vtxos_utxo);
-			trace!("sighashes: {:?}", sighashes);
+			trace!("vtxo sighashes: {:?}", sighashes);
 			assert_eq!(sighashes.len(), vtxo_agg_nonces.len());
 			let signatures = iter::zip(sec_nonces.into_iter(), iter::zip(sighashes, vtxo_agg_nonces))
 				.map(|(sec_nonce, (sighash, agg_nonce))| {
@@ -443,7 +450,6 @@ impl Wallet {
 						None,
 					).0
 				}).collect::<Vec<_>>();
-			trace!("Sending signatures to ASP");
 			self.asp.provide_signatures(rpc::RoundSignatures {
 				forfeit: forfeit_signatures.into_iter().map(|(id, sigs)| {
 					rpc::ForfeitSignatures {

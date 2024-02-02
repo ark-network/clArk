@@ -39,6 +39,8 @@ enum Cli {
 	},
 	#[command()]
 	StartExit {},
+	#[command()]
+	ClaimExit {},
 
 	/// Dev command to drop the vtxo database.
 	#[command()]
@@ -49,7 +51,7 @@ enum Cli {
 async fn main() {
 	env_logger::builder()
 		.filter_module("sled", log::LevelFilter::Off)
-		.filter_module("bitcoincore_rpc", log::LevelFilter::Debug)
+		.filter_module("bitcoincore_rpc", log::LevelFilter::Trace)
 		.filter_level(log::LevelFilter::Trace)
 		.init();
 
@@ -80,6 +82,15 @@ async fn main() {
 			let mut w = Wallet::open(cfg).await.unwrap();
 			info!("Onchain balance: {}", w.onchain_balance().unwrap());
 			info!("Offchain balance: {}", w.offchain_balance().await.unwrap());
+			let (claimable, unclaimable) = w.unclaimed_exits().await.unwrap();
+			if !claimable.is_empty() {
+				let sum = claimable.iter().map(|i| i.spec.amount).sum::<Amount>();
+				info!("Got {} claimable exits with total value of {}", claimable.len(), sum);
+			}
+			if !unclaimable.is_empty() {
+				let sum = unclaimable.iter().map(|i| i.spec.amount).sum::<Amount>();
+				info!("Got {} unclaimable exits with total value of {}", unclaimable.len(), sum);
+			}
 		},
 		Cli::Onboard { amount } => {
 			let mut w = Wallet::open(cfg).await.unwrap();
@@ -94,6 +105,13 @@ async fn main() {
 			let mut w = Wallet::open(cfg).await.unwrap();
 			w.start_unilateral_exit().await.unwrap();
 		},
+		Cli::ClaimExit {  } => {
+			let mut w = Wallet::open(cfg).await.unwrap();
+			w.claim_unilateral_exit().await.unwrap();
+		},
+
+		// dev commands
+
 		Cli::DropVtxos {  } => {
 			let w = Wallet::open(cfg).await.unwrap();
 			w.drop_vtxos().await.unwrap();

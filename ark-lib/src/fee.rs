@@ -1,6 +1,5 @@
 
-use bitcoin::{Amount, ScriptBuf, TxOut, Witness};
-use bitcoin::blockdata::opcodes;
+use bitcoin::{opcodes, Amount, ScriptBuf, TxOut, Witness};
 
 /// Dust value of 330 satoshis.
 ///

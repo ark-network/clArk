@@ -6,11 +6,13 @@ use anyhow::Context;
 use bdk::SignOptions;
 use bdk_file_store::Store;
 use bitcoin::{
-	bip32, psbt, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, Transaction, Txid,
-	Witness,
+	bip32, psbt, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction,
+	TxOut, Txid,
 };
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 
+use crate::exit;
+use crate::psbt::PsbtInputExt;
 
 const P2TR_DUST: u64 = 330;
 const P2WPKH_DUST: u64 = 294;
@@ -49,6 +51,10 @@ impl Wallet {
 		})
 	}
 
+	pub fn bitcoind(&self) -> &bdk_bitcoind_rpc::bitcoincore_rpc::Client {
+		&self.bitcoind
+	}
+
 	pub fn tip(&self) -> anyhow::Result<(u32, BlockHash)> {
 		let he = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&self.bitcoind)?;
 		let ha = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_hash(&self.bitcoind, he)?;
@@ -56,9 +62,9 @@ impl Wallet {
 	}
 
 	pub fn sync(&mut self) -> anyhow::Result<Amount> {
-		let prev_tip = self.wallet.latest_checkpoint();
-		// let keychain_spks = self.wallet.spks_of_all_keychains();
+		debug!("Starting wallet sync...");
 
+		let prev_tip = self.wallet.latest_checkpoint();
 		let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
 		while let Some(em) = emitter.next_block()? {
 			self.wallet.apply_block_connected_to(&em.block, em.block_height(), em.connected_to())?;
@@ -182,12 +188,12 @@ impl Wallet {
 		let package_fee = urgent_fee_rate.fee_vb(package_vsize);
 
 		// Since BDK doesn't allow tx without recipients, we add a drain output.
-		let addr = self.wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address;
+		let change_addr = self.wallet.try_get_internal_address(bdk::wallet::AddressIndex::New)?;
 
 		let template_size = {
 			let mut b = self.wallet.build_tx();
 			Wallet::add_anchors(&mut b, anchors);
-			b.add_recipient(addr.script_pubkey(), P2WPKH_DUST);
+			b.add_recipient(change_addr.address.script_pubkey(), P2WPKH_DUST);
 			b.add_recipient(ScriptBuf::new(), package_fee);
 			b.fee_rate(urgent_fee_rate);
 			let mut psbt = b.finish().context("failed to craft anchor spend tx")?;
@@ -202,8 +208,9 @@ impl Wallet {
 
 		// Then build actual tx.
 		let mut b = self.wallet.build_tx();
+		trace!("setting version to 2");
 		Wallet::add_anchors(&mut b, anchors);
-		b.drain_to(addr.script_pubkey());
+		b.drain_to(change_addr.address.script_pubkey());
 		b.fee_absolute(total_fee);
 		let psbt = b.finish().context("failed to craft anchor spend tx")?;
 		let tx = self.finish_tx(psbt)?;
@@ -212,5 +219,36 @@ impl Wallet {
 			bail!("Failed to broadcast fee anchor spend: {}", e);
 		}
 		Ok(tx)
+	}
+
+	pub fn create_exit_claim_tx(&mut self, inputs: &[exit::ClaimInput]) -> anyhow::Result<Psbt> {
+		assert!(!inputs.is_empty());
+		self.sync().context("sync error")?;
+
+		let urgent_fee_rate = self.urgent_fee_rate();
+
+		// Since BDK doesn't allow tx without recipients, we add a drain output.
+		let change_addr = self.wallet.try_get_internal_address(bdk::wallet::AddressIndex::New)?;
+
+		let mut b = self.wallet.build_tx();
+		b.version(2);
+		for input in inputs {
+			let mut psbt_in = psbt::Input::default();
+			psbt_in.set_claim_input(input);
+			psbt_in.witness_utxo = Some(TxOut {
+				script_pubkey: input.spec.exit_spk(),
+				value: input.spec.amount.to_sat(),
+			});
+			b.add_foreign_utxo_with_sequence(
+				input.utxo,
+				psbt_in,
+				input.satisfaction_weight(),
+				Sequence::from_height(input.spec.exit_delta),
+			).expect("error adding foreign utxo for claim input");
+		}
+		b.drain_to(change_addr.address.script_pubkey());
+		b.fee_rate(urgent_fee_rate);
+
+		Ok(b.finish().context("failed to craft claim tx")?)
 	}
 }

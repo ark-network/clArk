@@ -143,7 +143,7 @@ impl VtxoTreeSpec {
 			lock_time: bitcoin::absolute::LockTime::ZERO,
 			input: vec![TxIn {
 				previous_output: OutPoint::null(),
-				sequence: Sequence::ZERO,
+				sequence: Sequence::MAX,
 				script_sig: ScriptBuf::new(),
 				witness: Witness::new(),
 			}],
@@ -187,7 +187,7 @@ impl VtxoTreeSpec {
 			lock_time: bitcoin::absolute::LockTime::ZERO,
 			input: vec![TxIn {
 				previous_output: OutPoint::null(),
-				sequence: Sequence::ZERO,
+				sequence: Sequence::MAX,
 				script_sig: ScriptBuf::new(),
 				witness: Witness::new(),
 			}],

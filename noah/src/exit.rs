@@ -124,7 +124,7 @@ impl Wallet {
 
 		// Then we'll send a tx that will pay the fee for all the txs we made.
 		let tx = self.onchain.spend_fee_anchors(&fee_anchors, total_size)?;
-		info!("Send anchor spend tx: {}", tx.txid());
+		info!("Sent anchor spend tx: {}", tx.txid());
 
 		// After we succesfully stored the claim inputs, we can drop the vtxos.
 		for id in started {

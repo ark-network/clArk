@@ -194,12 +194,11 @@ impl Wallet {
 		let template_size = {
 			let mut b = self.wallet.build_tx();
 			Wallet::add_anchors(&mut b, anchors);
-			b.add_recipient(change_addr.address.script_pubkey(), P2WPKH_DUST);
-			b.add_recipient(ScriptBuf::new(), package_fee);
+			b.add_recipient(change_addr.address.script_pubkey(), package_fee + P2TR_DUST);
 			b.fee_rate(urgent_fee_rate);
-			let mut psbt = b.finish().context("failed to craft anchor spend tx")?;
+			let mut psbt = b.finish().expect("failed to craft anchor spend template");
 			let finalized = self.wallet.sign(&mut psbt, SignOptions::default())
-				.context("failed to sign")?;
+				.expect("failed to sign anchor spend template");
 			assert!(finalized);
 			psbt.extract_tx().vsize()
 		};
@@ -213,12 +212,9 @@ impl Wallet {
 		Wallet::add_anchors(&mut b, anchors);
 		b.drain_to(change_addr.address.script_pubkey());
 		b.fee_absolute(total_fee);
-		let psbt = b.finish().context("failed to craft anchor spend tx")?;
-		let tx = self.finish_tx(psbt)?;
-
-		if let Err(e) = self.broadcast_tx(&tx) {
-			bail!("Failed to broadcast fee anchor spend: {}", e);
-		}
+		let psbt = b.finish().expect("failed to craft anchor spend tx");
+		let tx = self.finish_tx(psbt).context("error finalizing anchor spend tx")?;
+		self.broadcast_tx(&tx).context("failed to broadcast fee anchor spend")?;
 		Ok(tx)
 	}
 

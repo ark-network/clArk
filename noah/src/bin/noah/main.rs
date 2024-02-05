@@ -65,8 +65,8 @@ enum Command {
 async fn inner_main() -> anyhow::Result<()> {
 	env_logger::builder()
 		.target(env_logger::Target::Stderr)
-		.filter_module("sled", log::LevelFilter::Off)
-		.filter_module("bitcoincore_rpc", log::LevelFilter::Trace)
+		.filter_module("sled", log::LevelFilter::Warn)
+		.filter_module("bitcoincore_rpc", log::LevelFilter::Debug)
 		.filter_level(log::LevelFilter::Trace)
 		.init();
 

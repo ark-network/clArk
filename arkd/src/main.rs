@@ -9,8 +9,8 @@ use arkd::{App, Config};
 #[tokio::main]
 async fn main() {
 	env_logger::builder()
-		.filter_module("sled", log::LevelFilter::Off)
-		.filter_module("bitcoincore_rpc", log::LevelFilter::Off)
+		.filter_module("sled", log::LevelFilter::Warn)
+		.filter_module("bitcoincore_rpc", log::LevelFilter::Warn)
 		.filter_level(log::LevelFilter::Trace)
 		.init();
 
@@ -22,8 +22,8 @@ async fn main() {
 		round_submit_time: Duration::from_secs(2),
 		round_sign_time: Duration::from_secs(2),
 		nb_round_nonces: 100,
-		vtxo_expiry_delta: 1 * 24 * 6, // 1 day
-		vtxo_exit_delta: 2 * 6, // 2 hrs
+		vtxo_expiry_delta: 1 * 24 * 6,
+		vtxo_exit_delta: 2 * 6,
 		..Default::default()
 	};
 	fs::create_dir_all(&cfg.datadir).expect("failed to create datadir");

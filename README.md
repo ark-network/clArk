@@ -53,7 +53,7 @@ $ cargo run --bin noah -- --datadir ./test/noah1 create
 $ cargo run --bin noah -- --datadir ./test/noah2 create
 ```
 
-These will crate individual wallets and print an on-chain address you can use
+These will create individual wallets and print an on-chain address you can use
 to **fund them the same way as you did for the ASP above**. Note that clients
 can receive off-chain Ark transactions without having any on-chain balance, but
 a little bit of on-chain money is needed to perform unilateral exits.

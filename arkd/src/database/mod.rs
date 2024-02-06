@@ -31,6 +31,8 @@ pub struct Db {
 /// A vtxo that has been forfeited and is now ours.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum ForfeitVtxo {
+	//TODO(stevenroose) for the forfeit sigs to make sense here, they need to include the round id
+	//that they were spent in so that the connectors can be found!
 	Onboard {
 		spec: VtxoSpec,
 		utxo: OutPoint,

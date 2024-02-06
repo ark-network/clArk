@@ -49,6 +49,7 @@ message RoundInfo {
 
 message RoundStart {
 	uint64 round_id = 1;
+	uint64 offboard_feerate_sat_vkb = 2;
 }
 
 message ForfeitNonces {
@@ -76,18 +77,21 @@ message RoundEvent {
 		RoundStart start = 1;
 		RoundProposal proposal = 2;
 		RoundFinished finished = 3;
-	}
+	};
 }
 
-message Destination {
+message Payment {
 	uint64 amount = 1;
-	bytes public_key = 2;
+	oneof destination {
+		bytes vtxo_public_key = 2;
+		bytes offboard_spk = 3;
+	};
 }
 
 message SubmitPaymentRequest {
 	//TODO(stevenroose) add proof of vtxo ownership
 	repeated bytes input_vtxos = 1;
-	repeated Destination destinations = 2;
+	repeated Payment payments = 2;
 	bytes cosign_pubkey = 3;
 	repeated bytes public_nonces = 4;
 }

@@ -1,13 +1,13 @@
 
 use std::sync::Arc;
 
-use bitcoin::{Amount, Txid};
+use bitcoin::{Amount, ScriptBuf, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use tokio_stream::{Stream, StreamExt};
 use tokio_stream::wrappers::BroadcastStream;
 
-use ark::{musig, Destination, Vtxo, VtxoId};
+use ark::{musig, OffboardRequest, VtxoRequest, Vtxo, VtxoId};
 
 use crate::App;
 use crate::rpc;
@@ -118,9 +118,10 @@ impl rpc::ArkService for Arc<App> {
 			let e = e.map_err(|e| internal!("broken stream: {}", e))?;
 			Ok(rpc::RoundEvent {
 				event: Some(match e {
-					RoundEvent::Start { id } => {
+					RoundEvent::Start { id, offboard_feerate } => {
 						rpc::round_event::Event::Start(rpc::RoundStart {
 							round_id: id,
+							offboard_feerate_sat_vkb: offboard_feerate.to_sat_per_kwu() * 4,
 						})
 					},
 					RoundEvent::Proposal {
@@ -162,13 +163,24 @@ impl rpc::ArkService for Arc<App> {
 			Ok(Vtxo::decode(&vtxo).map_err(|e| badarg!("invalid vtxo: {}", e))?)
 		}).collect::<Result<_, tonic::Status>>()?;
 
-		let outputs = req.destinations.into_iter().map(|d| {
-			Ok(Destination {
-				amount: Amount::from_sat(d.amount),
-				pubkey: PublicKey::from_slice(&d.public_key)
-					.map_err(|e| badarg!("malformed pubkey {:?}: {}", d.public_key, e))?,
-			})
-		}).collect::<Result<_, tonic::Status>>()?;
+		let mut outputs = Vec::with_capacity(req.payments.len());
+		let mut offboards = Vec::with_capacity(req.payments.len() / 2);
+		for payment in req.payments {
+			let amount = Amount::from_sat(payment.amount);
+			match payment.destination.ok_or_else(|| badarg!("missing destination"))? {
+				rpc::payment::Destination::VtxoPublicKey(pk) => {
+					let pubkey= PublicKey::from_slice(&pk)
+						.map_err(|e| badarg!("malformed pubkey {:?}: {}", pk, e))?;
+					outputs.push(VtxoRequest { amount, pubkey });
+				},
+				rpc::payment::Destination::OffboardSpk(s) => {
+					let script_pubkey = ScriptBuf::from_bytes(s);
+					let offb = OffboardRequest { script_pubkey, amount };
+					offb.validate().map_err(|e| badarg!("invalid offboard request: {}", e))?;
+					offboards.push(offb);
+				},
+			}
+		}
 
 		let cosign_pubkey = PublicKey::from_slice(&req.cosign_pubkey)
 			.map_err(|e| badarg!("invalid cosign pubkey: {}", e))?;
@@ -187,7 +199,9 @@ impl rpc::ArkService for Arc<App> {
 				.map_err(|e| badarg!("invalid public nonce: {}", e))
 		}).collect::<Result<_, tonic::Status>>()?;
 
-		let inp = RoundInput::RegisterPayment { inputs, outputs, cosign_pubkey, public_nonces };
+		let inp = RoundInput::RegisterPayment {
+			inputs, outputs, offboards, cosign_pubkey, public_nonces,
+		};
 		self.round_input_tx.send(inp).expect("input channel closed");
 		Ok(tonic::Response::new(rpc::Empty {}))
 	}

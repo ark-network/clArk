@@ -11,10 +11,11 @@ use bitcoin::{
 };
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 
+use ark::P2TR_DUST;
+
 use crate::exit;
 use crate::psbt::PsbtInputExt;
 
-const P2TR_DUST: u64 = 330;
 const DB_MAGIC: &str = "onchain_bdk";
 
 const TX_ALREADY_IN_CHAIN_ERROR: i32 = -27;

@@ -9,7 +9,7 @@ use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::TaprootBuilder;
 
-use crate::{fee, musig, util, Destination};
+use crate::{fee, musig, util, VtxoRequest};
 use crate::tree::Tree;
 
 
@@ -26,7 +26,7 @@ const NODE4_TX_VSIZE: u64 = 240;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VtxoTreeSpec {
 	pub cosigners: Vec<PublicKey>,
-	pub destinations: Vec<Destination>,
+	pub vtxos: Vec<VtxoRequest>,
 	pub asp_key: PublicKey,
 	pub expiry_height: u32,
 	pub exit_delta: u16,
@@ -38,7 +38,7 @@ pub struct VtxoTreeSpec {
 impl VtxoTreeSpec {
 	pub fn new(
 		cosigners_with_asp: Vec<PublicKey>,
-		destinations: Vec<Destination>,
+		vtxos: Vec<VtxoRequest>,
 		asp_key: PublicKey,
 		expiry_height: u32,
 		exit_delta: u16,
@@ -46,7 +46,7 @@ impl VtxoTreeSpec {
 		VtxoTreeSpec {
 			cosign_key_agg: Some(musig::key_agg(cosigners_with_asp.iter().copied())),
 			cosigners: cosigners_with_asp,
-			destinations: destinations,
+			vtxos: vtxos,
 			asp_key: asp_key,
 			expiry_height: expiry_height,
 			exit_delta: exit_delta,
@@ -74,23 +74,27 @@ impl VtxoTreeSpec {
 		musig::xonly_from(self.cosign_key_agg().agg_pk())
 	}
 
+	pub fn iter_vtxos(&self) -> impl Iterator<Item = &VtxoRequest> {
+		self.vtxos.iter()
+	}
+
 	/// Calculate the total value needed in the tree.
 	///
 	/// This accounts for
-	/// - all destinations getting their value
+	/// - all vtxos getting their value
 	/// - a dust fee anchor at each leaf
 	/// - minrelay fee for all intermediate txs
 	pub fn total_required_value(&self) -> Amount {
-		let dest_sum = self.destinations.iter().map(|d| d.amount.to_sat()).sum::<u64>();
+		let dest_sum = self.vtxos.iter().map(|d| d.amount.to_sat()).sum::<u64>();
 
 		// all anchor dust + 1 sat/vb for minrelayfee
-		let leaf_extra = self.destinations.len() as u64 * fee::DUST.to_sat()
-			+ self.destinations.len() as u64 * LEAF_TX_VSIZE;
+		let leaf_extra = self.vtxos.len() as u64 * fee::DUST.to_sat()
+			+ self.vtxos.len() as u64 * LEAF_TX_VSIZE;
 
 		// total minrelayfee requirement for all intermediate nodes
 		let nodes_fee = {
 			let mut ret = 0;
-			let mut left = self.destinations.len();
+			let mut left = self.vtxos.len();
 			while left > 1 {
 				let radix = cmp::min(left, 4);
 				left -= radix;
@@ -107,8 +111,8 @@ impl VtxoTreeSpec {
 		Amount::from_sat(dest_sum + leaf_extra + nodes_fee)
 	}
 
-	pub fn find_leaf_idxs<'a>(&'a self, dest: &'a Destination) -> impl Iterator<Item = usize> + 'a {
-		self.destinations.iter().enumerate().filter_map(move |(i, d)| {
+	pub fn find_leaf_idxs<'a>(&'a self, dest: &'a VtxoRequest) -> impl Iterator<Item = usize> + 'a {
+		self.vtxos.iter().enumerate().filter_map(move |(i, d)| {
 			if d == dest {
 				Some(i)
 			} else {
@@ -168,20 +172,23 @@ impl VtxoTreeSpec {
 		}
 	}
 
-	fn exit_clause(&self, destination: &Destination) -> ScriptBuf {
-		let pk = destination.pubkey.x_only_public_key().0;
+	fn exit_clause(&self, payment: &VtxoRequest) -> ScriptBuf {
+		let pk = payment.pubkey.x_only_public_key().0;
 		util::delayed_sign(self.exit_delta.try_into().unwrap(), pk)
 	}
 
-	fn leaf_spk(&self, destination: &Destination) -> ScriptBuf {
-		let joint_key = musig::combine_keys([destination.pubkey, self.asp_key]);
-		let leaf_spendinfo = TaprootBuilder::new()
-			.add_leaf(0, self.exit_clause(destination)).unwrap()
-			.finalize(&util::SECP, joint_key).unwrap();
-		ScriptBuf::new_v1_p2tr_tweaked(leaf_spendinfo.output_key())
+	fn leaf_taproot(&self, payment: &VtxoRequest) -> taproot::TaprootSpendInfo {
+		let joint_key = musig::combine_keys([payment.pubkey, self.asp_key]);
+		TaprootBuilder::new()
+			.add_leaf(0, self.exit_clause(payment)).unwrap()
+			.finalize(&util::SECP, joint_key).unwrap()
 	}
 
-	fn leaf_tx(&self, destination: &Destination) -> Transaction {
+	fn leaf_spk(&self, payment: &VtxoRequest) -> ScriptBuf {
+		ScriptBuf::new_v1_p2tr_tweaked(self.leaf_taproot(payment).output_key())
+	}
+
+	fn leaf_tx(&self, payment: &VtxoRequest) -> Transaction {
 		Transaction {
 			version: 2,
 			lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -193,8 +200,8 @@ impl VtxoTreeSpec {
 			}],
 			output: vec![
 				TxOut {
-					script_pubkey: self.leaf_spk(destination),
-					value: destination.amount.to_sat(),
+					script_pubkey: self.leaf_spk(payment),
+					value: payment.amount.to_sat(),
 				},
 				fee::dust_anchor(),
 			],
@@ -202,7 +209,7 @@ impl VtxoTreeSpec {
 	}
 
 	pub fn build_unsigned_tree(&self, utxo: OutPoint) -> Tree<Transaction> {
-		let leaves = self.destinations.iter().map(|dest| self.leaf_tx(dest));
+		let leaves = self.vtxos.iter().map(|dest| self.leaf_tx(dest));
 		let mut tree = Tree::new(leaves, |children| self.node_tx(children));
 
 		// Iterate over all nodes in reverse order and set the prevouts.
@@ -334,7 +341,7 @@ mod test {
 		let sig = secp.sign_schnorr(
 			&secp256k1::Message::from_slice(&sha[..]).unwrap(), &key1,
 		);
-		let dest = Destination {
+		let dest = VtxoRequest {
 			pubkey: KeyPair::new(&secp, &mut rand::thread_rng()).public_key(),
 			amount: Amount::from_sat(100_000),
 		};

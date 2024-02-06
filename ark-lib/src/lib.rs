@@ -14,16 +14,97 @@ mod napkin;
 
 use std::{fmt, io};
 
-use bitcoin::{taproot, Amount, OutPoint, ScriptBuf, Transaction, Txid};
+use bitcoin::{taproot, Amount, FeeRate, OutPoint, Script, ScriptBuf, Transaction, Txid, TxOut, Weight};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 
+pub const P2TR_DUST_VB: u64 = 110;
+/// 330 satoshis
+pub const P2TR_DUST: u64 = P2TR_DUST_VB * 3;
+
+pub const P2WPKH_DUST_VB: u64 = 90;
+/// 294 satoshis
+pub const P2WPKH_DUST: u64 = P2WPKH_DUST_VB * 3;
+
+pub const P2PKH_DUST_VB: u64 = 182;
+/// 546 satoshis
+pub const P2PKH_DUST: u64 = P2PKH_DUST_VB * 3;
+
+pub const P2SH_DUST_VB: u64 = 180;
+/// 540 satoshis
+pub const P2SH_DUST: u64 = P2PKH_DUST_VB * 3;
+
+pub const P2WSH_DUST_VB: u64 = 110;
+/// 330 satoshis
+pub const P2WSH_DUST: u64 = P2TR_DUST_VB * 3;
+
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub struct Destination {
+pub struct VtxoRequest {
 	pub pubkey: PublicKey,
 	#[serde(with = "bitcoin::amount::serde::as_sat")]
 	pub amount: Amount,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+pub struct OffboardRequest {
+	pub script_pubkey: ScriptBuf,
+	#[serde(with = "bitcoin::amount::serde::as_sat")]
+	pub amount: Amount,
+}
+
+impl OffboardRequest {
+	fn calculate_fee(script: &Script, fee_rate: FeeRate) -> Option<Amount> {
+		// NB We calculate the required extra fee as the "dust" fee for the given feerate.
+		// We take Bitcoin's dust amounts, which are calculated at 3 sat/vb, but then
+		// calculated for the given feerate. For more on dust, see:
+		// https://bitcoin.stackexchange.com/questions/10986/what-is-meant-by-bitcoin-dust
+
+		let vb = if script.is_p2pkh() {
+			P2PKH_DUST_VB
+		} else if script.is_p2sh() {
+			P2SH_DUST_VB
+		} else if script.is_v0_p2wpkh() {
+			P2WPKH_DUST_VB
+		} else if script.is_v0_p2wsh() {
+			P2WSH_DUST_VB
+		} else if script.is_v1_p2tr() {
+			P2TR_DUST_VB
+		} else if script.is_op_return() {
+			bitcoin::consensus::encode::VarInt(script.len() as u64).len() as u64
+				+ script.len() as u64
+				+ 8
+				// the input data (scriptSig and witness length fields included)
+				+ 36 + 4 + 1 + 1
+		} else {
+			return None;
+		};
+		Some(fee_rate * Weight::from_vb(vb).expect("no overflow"))
+	}
+
+    /// Validate that the offboard has a valid script.
+	pub fn validate(&self) -> Result<(), &'static str> {
+		if Self::calculate_fee(&self.script_pubkey, FeeRate::ZERO).is_none() {
+            Err("invalid script")
+        } else {
+            Ok(())
+        }
+	}
+
+	/// Convert into a tx output.
+	pub fn to_txout(&self) -> TxOut {
+		TxOut {
+			script_pubkey: self.script_pubkey.clone(),
+			value: self.amount.to_sat(),
+		}
+	}
+
+	/// Returns the fee charged for the user to make this offboard given the fee rate.
+	///
+	/// Always returns [Some] if [OffboardRequest::validate] returns [Ok].
+	pub fn fee(&self, fee_rate: FeeRate) -> Option<Amount> {
+		Self::calculate_fee(&self.script_pubkey, fee_rate)
+	}
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

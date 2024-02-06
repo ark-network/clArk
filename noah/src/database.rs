@@ -12,6 +12,7 @@ use crate::exit;
 // Trees
 
 const VTXO_TREE: &str = "noah_vtxos";
+const FORFEIT_VTXO_TREE: &str = "noah_forfeited_vtxos";
 
 // Top-level entries
 
@@ -93,4 +94,14 @@ impl Db {
 		self.db.insert(LAST_ARK_SYNC_HEIGHT, height.to_be_bytes().to_vec())?;
 		Ok(())
 	}
+
+	pub fn store_forfeited_vtxo(&self, id: VtxoId, height: u32) -> anyhow::Result<()> {
+		self.db.open_tree(VTXO_TREE)?.insert(id, height.to_be_bytes().to_vec())?;
+		Ok(())
+	}
+
+	pub fn has_forfeited_vtxo(&self, id: VtxoId) -> anyhow::Result<bool> {
+		Ok(self.db.open_tree(VTXO_TREE)?.get(id)?.is_some())
+	}
+	//TODO(stevenroose) regularly prune forfeit vtxos based on height
 }

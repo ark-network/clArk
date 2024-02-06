@@ -32,12 +32,12 @@ enum Command {
 		force: bool,
 	},
 	#[command()]
-	GetAddress {},
+	GetAddress,
 	/// The the public key used to receive vtxos.
 	#[command()]
-	GetVtxoPubkey {},
+	GetVtxoPubkey,
 	#[command()]
-	Balance {},
+	Balance,
 	#[command()]
 	Onboard {
 		amount: Amount,
@@ -53,13 +53,13 @@ enum Command {
 		amount: Amount,
 	},
 	#[command()]
-	StartExit {},
+	StartExit,
 	#[command()]
-	ClaimExit {},
+	ClaimExit,
 
 	/// Dev command to drop the vtxo database.
 	#[command()]
-	DropVtxos {},
+	DropVtxos,
 }
 
 async fn inner_main() -> anyhow::Result<()> {
@@ -100,13 +100,13 @@ async fn inner_main() -> anyhow::Result<()> {
 	let mut w = Wallet::open(cfg.clone()).await.context("error opening wallet")?;
 	match cli.command {
 		Command::Create { .. } => unreachable!(),
-		Command::GetAddress { } => {
+		Command::GetAddress => {
 			println!("{}", w.get_new_onchain_address()?);
 		},
-		Command::GetVtxoPubkey { } => {
+		Command::GetVtxoPubkey => {
 			println!("{}", w.vtxo_pubkey());
 		}
-		Command::Balance { } => {
+		Command::Balance => {
 			info!("Onchain balance: {}", w.onchain_balance()?);
 			info!("Offchain balance: {}", w.offchain_balance().await?);
 			let (claimable, unclaimable) = w.unclaimed_exits().await?;
@@ -132,16 +132,16 @@ async fn inner_main() -> anyhow::Result<()> {
 			let dest = Destination { pubkey, amount };
 			w.send_payment(dest).await?;
 		},
-		Command::StartExit {  } => {
+		Command::StartExit => {
 			w.start_unilateral_exit().await?;
 		},
-		Command::ClaimExit {  } => {
+		Command::ClaimExit => {
 			w.claim_unilateral_exit().await?;
 		},
 
 		// dev commands
 
-		Command::DropVtxos {  } => {
+		Command::DropVtxos => {
 			w.drop_vtxos().await?;
 			info!("Dropped all vtxos");
 		},

@@ -96,12 +96,12 @@ impl Db {
 	}
 
 	pub fn store_forfeited_vtxo(&self, id: VtxoId, height: u32) -> anyhow::Result<()> {
-		self.db.open_tree(VTXO_TREE)?.insert(id, height.to_be_bytes().to_vec())?;
+		self.db.open_tree(FORFEIT_VTXO_TREE)?.insert(id, height.to_be_bytes().to_vec())?;
 		Ok(())
 	}
 
 	pub fn has_forfeited_vtxo(&self, id: VtxoId) -> anyhow::Result<bool> {
-		Ok(self.db.open_tree(VTXO_TREE)?.get(id)?.is_some())
+		Ok(self.db.open_tree(FORFEIT_VTXO_TREE)?.get(id)?.is_some())
 	}
 	//TODO(stevenroose) regularly prune forfeit vtxos based on height
 }

@@ -31,6 +31,7 @@ impl Db {
 	}
 	
 	/// Utility function for transactions that fixes the annoying generics.
+	#[allow(unused)] // for future use
 	fn transaction(&self,
 		f: impl Fn(&tx::TransactionalTree) -> tx::ConflictableTransactionResult<(), ()>,
 	) -> anyhow::Result<()> {

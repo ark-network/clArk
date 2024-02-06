@@ -6,7 +6,7 @@ use anyhow::Context;
 use bdk::SignOptions;
 use bdk_file_store::Store;
 use bitcoin::{
-	bip32, psbt, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, Sequence, Transaction,
+	bip32, psbt, Address, Amount, BlockHash, Network, OutPoint, Sequence, Transaction,
 	TxOut, Txid,
 };
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
@@ -15,7 +15,6 @@ use crate::exit;
 use crate::psbt::PsbtInputExt;
 
 const P2TR_DUST: u64 = 330;
-const P2WPKH_DUST: u64 = 294;
 const DB_MAGIC: &str = "onchain_bdk";
 
 const TX_ALREADY_IN_CHAIN_ERROR: i32 = -27;

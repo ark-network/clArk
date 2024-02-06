@@ -134,6 +134,9 @@ pub async fn run_round_scheduler(
 		// In this loop we will try to finish the round and make new attempts.
 		let mut allowed_inputs = HashSet::new();
 		'attempt: loop {
+			let balance = app.sync_onchain_wallet().await.context("error syncing onchain wallet")?;
+			info!("Current wallet balance: {}", balance);
+
 			let mut all_inputs = Vec::<Vtxo>::new();
 			let mut all_outputs = Vec::<Destination>::new();
 			let mut cosigners = HashSet::<PublicKey>::new();
@@ -217,7 +220,6 @@ pub async fn run_round_scheduler(
 			);
 
 			// Build round tx.
-			app.sync_onchain_wallet().await.context("error syncing onchain wallet")?;
 			//TODO(stevenroose) think about if we can release lock sooner
 			let mut wallet = app.wallet.lock().await;
 			let mut round_tx_psbt = {

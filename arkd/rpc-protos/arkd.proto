@@ -3,7 +3,6 @@ syntax = "proto3";
 
 package arkd;
 
-
 /// Public ark service for arkd.
 service ArkService {
 	rpc GetArkInfo(Empty) returns (ArkInfo) {}

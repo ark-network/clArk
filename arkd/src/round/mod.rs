@@ -5,22 +5,24 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use bitcoin::{Amount, OutPoint, Transaction};
+use bitcoin::{Amount, FeeRate, OutPoint, Transaction};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::sighash::TapSighash;
 
-use ark::{musig, Destination, Vtxo, VtxoId};
+use ark::{musig, OffboardRequest, VtxoRequest, Vtxo, VtxoId};
 use ark::connectors::ConnectorChain;
 use ark::tree::signed::{SignedVtxoTree, VtxoTreeSpec};
 
 use crate::App;
 use crate::database::ForfeitVtxo;
+use crate::util::FeeRateExt;
 
 #[derive(Debug, Clone)]
 pub enum RoundEvent {
 	Start {
 		id: u64,
+		offboard_feerate: FeeRate,
 	},
 	Proposal {
 		id: u64,
@@ -41,7 +43,8 @@ pub enum RoundEvent {
 pub enum RoundInput {
 	RegisterPayment {
 		inputs: Vec<Vtxo>,
-		outputs: Vec<Destination>,
+		outputs: Vec<VtxoRequest>,
+		offboards: Vec<OffboardRequest>,
 		cosign_pubkey: PublicKey,
 		public_nonces: Vec<musig::MusigPubNonce>,
 	},
@@ -52,7 +55,12 @@ pub enum RoundInput {
 	},
 }
 
-fn validate_payment(inputs: &[Vtxo], outputs: &[Destination]) -> bool {
+fn validate_payment(
+    inputs: &[Vtxo],
+    outputs: &[VtxoRequest],
+    offboards: &[OffboardRequest],
+    offboard_feerate: FeeRate,
+) -> bool {
 	let mut in_set = HashSet::with_capacity(inputs.len());
 	let mut in_sum = Amount::ZERO;
 	for input in inputs {
@@ -69,6 +77,16 @@ fn validate_payment(inputs: &[Vtxo], outputs: &[Destination]) -> bool {
 			return false;
 		}
 	}
+    for offboard in offboards {
+        let fee = match offboard.fee(offboard_feerate) {
+            Some(v) => v,
+            None => return false,
+        };
+        out_sum += offboard.amount + fee;
+		if out_sum > in_sum {
+			return false;
+		}
+    }
 
 	true
 }
@@ -114,6 +132,10 @@ pub async fn run_round_scheduler(
 ) -> anyhow::Result<()> {
 	let cfg = &app.config;
 
+	//TODO(stevenroose) somehow get these from a fee estimator service
+	let offboard_feerate = FeeRate::from_sat_per_vb(10).unwrap();
+    let round_tx_feerate = FeeRate::from_sat_per_vb(10).unwrap();
+
 	'round: loop {
 		// Sleep for the round interval, but discard all incoming messages.
 		tokio::pin! { let timeout = tokio::time::sleep(cfg.round_interval); }
@@ -129,7 +151,7 @@ pub async fn run_round_scheduler(
 		info!("Starting round {}", round_id);
 
 		// Start new round, announce.
-		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id });
+		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id, offboard_feerate });
 
 		// In this loop we will try to finish the round and make new attempts.
 		let mut allowed_inputs = HashSet::new();
@@ -138,7 +160,8 @@ pub async fn run_round_scheduler(
 			info!("Current wallet balance: {}", balance);
 
 			let mut all_inputs = Vec::<Vtxo>::new();
-			let mut all_outputs = Vec::<Destination>::new();
+			let mut all_outputs = Vec::<VtxoRequest>::new();
+            let mut all_offboards = Vec::<OffboardRequest>::new();
 			let mut cosigners = HashSet::<PublicKey>::new();
 			cosigners.insert(app.master_key.public_key());
 			let mut vtxo_pub_nonces = HashMap::new();
@@ -151,7 +174,9 @@ pub async fn run_round_scheduler(
 				tokio::select! {
 					() = &mut timeout => break 'receive,
 					input = round_input_rx.recv() => match input.expect("broken channel") {
-						RoundInput::RegisterPayment { inputs, outputs, cosign_pubkey, public_nonces } => {
+						RoundInput::RegisterPayment {
+							inputs, outputs, offboards, cosign_pubkey, public_nonces,
+						} => {
 							//TODO(stevenroose) verify ownership over inputs
 
 							if !allowed_inputs.is_empty() {
@@ -165,18 +190,19 @@ pub async fn run_round_scheduler(
 
 							//TODO(stevenroose) check that vtxos exist!
 
-							if !validate_payment(&inputs, &outputs) {
-								warn!("User submitted bad payment: ins {:?}; outs {:?}",
-									inputs, outputs);
+							if !validate_payment(&inputs, &outputs, &offboards, offboard_feerate) {
+								warn!("User submitted bad payment: ins {:?}; outs {:?}; offb {:?}",
+									inputs, outputs, offboards);
 								continue 'receive;
 							}
 
-							trace!("Received {} inputs and {} outputs from user",
-								inputs.len(), outputs.len());
+							trace!("Received {} inputs, {} outputs and {} offboards from user",
+								inputs.len(), outputs.len(), offboards.len());
 							all_inputs.extend(inputs);
 							//TODO(stevenroose) somehow check if a tree using these outputs
 							//will exceed the config.nb_round_nonces number of nodes
 							all_outputs.extend(outputs);
+                            all_offboards.extend(offboards);
 							//TODO(stevenroose) handle duplicate cosign key
 							assert!(cosigners.insert(cosign_pubkey));
 							vtxo_pub_nonces.insert(cosign_pubkey, public_nonces);
@@ -185,14 +211,32 @@ pub async fn run_round_scheduler(
 					}
 				}
 			}
-			if all_inputs.is_empty() || all_outputs.is_empty() {
-				info!("No payments this round, sitting it out...");
+			if all_inputs.is_empty() || (all_outputs.is_empty() && all_offboards.is_empty()) {
+				info!("Nothing to do this round, sitting it out...");
 				continue 'round;
 			}
 			info!("Received {} inputs and {} outputs for round", all_inputs.len(), all_outputs.len());
 			// Make sure we don't allow other inputs next attempt.
 			allowed_inputs.clear();
 			allowed_inputs.extend(all_inputs.iter().map(|v| v.id()));
+
+			// Since it's possible in testing that we only have to do onboards,
+			// and since it's pretty annoying to deal with the case of no vtxos,
+			// if there are no vtxos, we will just add a fake vtxo for the ASP.
+			// In practice, in later versions, it is very likely that the ASP
+			// will actually want to create change vtxos, so temporarily, this
+			// dummy vtxo will be a placeholder for a potential change vtxo.
+			if all_outputs.is_empty() {
+				lazy_static::lazy_static! {
+					static ref UNSPENDABLE: PublicKey =
+						"031575a4c3ad397590ccf7aa97520a60635c3215047976afb9df220bc6b4241b0d".parse().unwrap();
+				}
+				all_outputs.push(VtxoRequest {
+					pubkey: *UNSPENDABLE,
+					//TODO(stevenroose) replace with the p2tr dust value 
+					amount: ark::fee::DUST,
+				});
+			}
 
 			// Start vtxo tree and connector chain construction
 			//
@@ -227,7 +271,10 @@ pub async fn run_round_scheduler(
 				b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
 				b.add_recipient(vtxos_spec.cosign_spk(), vtxos_spec.total_required_value().to_sat());
 				b.add_recipient(connector_output.script_pubkey, connector_output.value);
-				b.fee_rate(bdk::FeeRate::from_sat_per_vb(10.0)); //TODO(stevenroose) fix
+                for offb in &all_offboards {
+                    b.add_recipient(offb.script_pubkey.clone(), offb.amount.to_sat());
+                }
+				b.fee_rate(round_tx_feerate.to_bdk());
 				b.finish().context("bdk failed to create round tx")?
 			};
 			let round_tx = round_tx_psbt.clone().extract_tx();

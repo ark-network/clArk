@@ -50,6 +50,8 @@ pub struct RoundInfo {
 pub struct RoundStart {
     #[prost(uint64, tag = "1")]
     pub round_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub offboard_feerate_sat_vkb: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -106,11 +108,22 @@ pub mod round_event {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Destination {
+pub struct Payment {
     #[prost(uint64, tag = "1")]
     pub amount: u64,
-    #[prost(bytes = "vec", tag = "2")]
-    pub public_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(oneof = "payment::Destination", tags = "2, 3")]
+    pub destination: ::core::option::Option<payment::Destination>,
+}
+/// Nested message and enum types in `Payment`.
+pub mod payment {
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Destination {
+        #[prost(bytes, tag = "2")]
+        VtxoPublicKey(::prost::alloc::vec::Vec<u8>),
+        #[prost(bytes, tag = "3")]
+        OffboardSpk(::prost::alloc::vec::Vec<u8>),
+    }
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -119,7 +132,7 @@ pub struct SubmitPaymentRequest {
     #[prost(bytes = "vec", repeated, tag = "1")]
     pub input_vtxos: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(message, repeated, tag = "2")]
-    pub destinations: ::prost::alloc::vec::Vec<Destination>,
+    pub payments: ::prost::alloc::vec::Vec<Payment>,
     #[prost(bytes = "vec", tag = "3")]
     pub cosign_pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", repeated, tag = "4")]

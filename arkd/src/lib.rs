@@ -9,6 +9,7 @@ mod database;
 mod rpc;
 mod rpcserver;
 mod round;
+mod util;
 
 use std::env;
 use std::net::SocketAddr;
@@ -196,7 +197,6 @@ impl App {
 
 	pub fn cosign_onboard(self: &Arc<Self>, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {
 		info!("Cosigning onboard request for utxo {}", user_part.utxo);
-		trace!("User part for onboard req for {}: {:#?}", user_part.utxo, user_part);
 		ark::onboard::new_asp(&user_part, &self.master_key)
 	}
 }

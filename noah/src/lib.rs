@@ -15,12 +15,12 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::{bail, Context};
-use bitcoin::{bip32, secp256k1, Address, Amount, Network, OutPoint, Transaction, Txid};
+use bitcoin::{bip32, secp256k1, Address, Amount, FeeRate, Network, OutPoint, Transaction, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{rand, KeyPair, PublicKey};
 use tokio_stream::StreamExt;
 
-use ark::{musig, Destination, Vtxo, VtxoId, VtxoSpec};
+use ark::{musig, OffboardRequest, VtxoRequest, Vtxo, VtxoId, VtxoSpec};
 use ark::connectors::ConnectorChain;
 use ark::tree::signed::{SignedVtxoTree, VtxoTreeSpec};
 use arkd_rpc_client as rpc;
@@ -213,7 +213,7 @@ impl Wallet {
 
 	fn add_new_vtxo(&mut self, vtxos: &SignedVtxoTree, leaf_idx: usize) -> anyhow::Result<()> {
 		let exit_branch = vtxos.exit_branch(leaf_idx).unwrap();
-		let dest = &vtxos.spec.destinations[leaf_idx];
+		let dest = &vtxos.spec.vtxos[leaf_idx];
 		let vtxo = Vtxo::Round {
 			spec: VtxoSpec {
 				user_pubkey: dest.pubkey,
@@ -274,7 +274,7 @@ impl Wallet {
 			let tree = SignedVtxoTree::decode(&round.signed_vtxos)
 				.context("invalid signed vtxo tree from asp")?;
 
-			for (idx, dest) in tree.spec.destinations.iter().enumerate() {
+			for (idx, dest) in tree.spec.vtxos.iter().enumerate() {
 				if dest.pubkey == vtxo_key.public_key() {
 					self.add_new_vtxo(&tree, idx)?;
 				}
@@ -294,44 +294,93 @@ impl Wallet {
 		Ok(self.onchain.send_money(addr, amount)?)
 	}
 
-	pub async fn send_payment(&mut self, destination: Destination) -> anyhow::Result<()> {
-		self.sync_ark().await.context("ark sync error")?;
-		let current_height = self.onchain.tip()?.0;
-
+	pub async fn send_payment(&mut self, destination: PublicKey, amount: Amount) -> anyhow::Result<()> {
 		//TODO(stevenroose) impl key derivation
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
 
 		// Prepare the payment.
+		self.sync_ark().await.context("failed to sync with ark")?;
+		let payment = VtxoRequest { pubkey: destination, amount };
 		let input_vtxos = self.db.get_all_vtxos()?;
-		let vtxo_ids = input_vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();
-		debug!("Spending vtxos: {:?}", vtxo_ids);
 		let change = {
 			let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
-			if sum < destination.amount {
+			if sum < payment.amount {
 				bail!("Balance too low");
-			} else if sum == destination.amount {
+			} else if sum == payment.amount {
 				info!("No change, emptying wallet.");
 				None
 			} else {
-				let amount = sum - destination.amount;
-				info!("Adding change destination for {}", amount);
-				Some(Destination {
+				let amount = sum - payment.amount;
+				info!("Adding change payment for {}", amount);
+				Some(VtxoRequest {
 					pubkey: vtxo_key.public_key(),
 					amount,
 				})
 			}
 		};
 
+		let vtxos = Some(payment).into_iter().chain(change).collect::<Vec<_>>();
+		self.participate_round(move |_id, _offb_fr| {
+			(input_vtxos.clone(), vtxos.clone(), Vec::new())
+		}).await.context("round failed")?;
+		Ok(())
+	}
+
+	pub async fn offboard_all(&mut self) -> anyhow::Result<()> {
+		self.sync_ark().await.context("failed to sync with ark")?;
+		let input_vtxos = self.db.get_all_vtxos()?;
+		let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
+		let addr = self.onchain.new_address()?;
+		let mut offb = OffboardRequest {
+			amount: sum,
+			script_pubkey: addr.script_pubkey(),
+		};
+		offb.validate().expect("bdk created invalid struct");
+
+		self.participate_round(move |_id, offb_fr| {
+			offb.amount -= offb.fee(offb_fr).expect("validated above");
+			(input_vtxos.clone(), Vec::new(), vec![offb.clone()])
+		}).await.context("round failed")?;
+		Ok(())
+	}
+
+	/// Participate in a round.
+	///
+	/// NB Instead of taking the input and output data as arguments, we take a closure that is
+	/// called to get these values. This is so because for offboards, the fee rate used for the
+	/// offboards is only announced in the beginning of the round and can change between round
+	/// attempts. Lateron this will also be useful so we can randomize destinations between failed
+	/// round attempts for better privacy.
+	async fn participate_round(
+		&mut self,
+		mut round_input: impl FnMut(u64, FeeRate) -> (Vec<Vtxo>, Vec<VtxoRequest>, Vec<OffboardRequest>),
+	) -> anyhow::Result<()> {
+		self.sync_ark().await.context("ark sync error")?;
+		let current_height = self.onchain.tip()?.0;
+
+		//TODO(stevenroose) impl key derivation
+		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
+
 		let mut events = self.asp.subscribe_rounds(rpc::Empty {}).await?.into_inner();
 
 		// Wait for the next round start.
 		trace!("Waiting for a round start.");
-		let mut round_id = loop {
+		let (mut round_id, offboard_feerate) = loop {
 			match events.next().await.context("events stream broke")??.event.unwrap() {
-				rpc::round_event::Event::Start(rpc::RoundStart { round_id }) => break round_id,
+				rpc::round_event::Event::Start(rpc::RoundStart {
+					round_id, offboard_feerate_sat_vkb,
+				}) => {
+					let offb_fr = FeeRate::from_sat_per_kwu(offboard_feerate_sat_vkb / 4);
+					break (round_id, offb_fr);
+				},
 				_ => {},
 			}
 		};
+
+		let (input_vtxos, vtxo_reqs, offb_reqs) = round_input(round_id, offboard_feerate);
+		let vtxo_ids = input_vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();
+		debug!("Spending vtxos: {:?}", vtxo_ids);
+
 
 		'round: loop {
 			let cosign_key = KeyPair::new(&SECP, &mut rand::thread_rng());
@@ -352,17 +401,26 @@ impl Wallet {
 			};
 
 			// The round has now started. We can submit our payment.
-			trace!("Submitting payment request with {} inputs and {} outputs",
-				input_vtxos.len(), 1 + change.is_some() as usize);
+			trace!("Submitting payment request with {} inputs, {} vtxo outputs and {} offboard outputs",
+				input_vtxos.len(), vtxo_reqs.len(), offb_reqs.len());
 			self.asp.submit_payment(rpc::SubmitPaymentRequest {
 				cosign_pubkey: cosign_key.public_key().serialize().to_vec(),
 				input_vtxos: input_vtxos.iter().map(|v| v.encode()).collect(),
-				destinations: Some(&destination).iter().chain(change.as_ref().iter()).map(|d| {
-					rpc::Destination {
-						amount: d.amount.to_sat(),
-						public_key: d.pubkey.serialize().to_vec(),
+				payments: vtxo_reqs.iter().map(|r| {
+					rpc::Payment {
+						amount: r.amount.to_sat(),
+						destination: Some(rpc::payment::Destination::VtxoPublicKey(
+							r.pubkey.serialize().to_vec(),
+						)),
 					}
-				}).collect(),
+				}).chain(offb_reqs.iter().map(|r| {
+					rpc::Payment {
+						amount: r.amount.to_sat(),
+						destination: Some(rpc::payment::Destination::OffboardSpk(
+							r.script_pubkey.to_bytes(),
+						)),
+					}
+				})).collect(),
 				public_nonces: pub_nonces.iter().map(|n| n.serialize().to_vec()).collect(),
 			}).await?;
 
@@ -403,7 +461,7 @@ impl Wallet {
 						break (vtxos, tx, cosigners, vtxo_nonces, forfeit_nonces);
 					},
 					// If a new round started meanwhile, pick up on that one.
-					rpc::round_event::Event::Start(rpc::RoundStart { round_id: id }) => {
+					rpc::round_event::Event::Start(rpc::RoundStart { round_id: id, .. }) => {
 						error!("Unexpected new round start...");
 						round_id = id;
 						continue 'round;
@@ -415,6 +473,26 @@ impl Wallet {
 
 			let vtxos_utxo = OutPoint::new(round_tx.txid(), 0);
 			let conns_utxo = OutPoint::new(round_tx.txid(), 1);
+
+			// Check that the proposal contains our inputs.
+			let mut my_vtxos = vtxo_reqs.clone();
+			for vtxo_req in vtxo_tree.iter_vtxos() {
+				if let Some(i) = my_vtxos.iter().position(|v| v == vtxo_req) {
+					my_vtxos.swap_remove(i);
+				}
+			}
+			if !my_vtxos.is_empty() {
+				bail!("ASP didn't include all of our vtxos, missing: {:?}", my_vtxos);
+			}
+			let mut my_offbs = offb_reqs.clone();
+			for offb in round_tx.output.iter().skip(2) {
+				if let Some(i) = my_offbs.iter().position(|o| o.to_txout() == *offb) {
+					my_offbs.swap_remove(i);
+				}
+			}
+			if !my_offbs.is_empty() {
+				bail!("ASP didn't include all of our offboards, missing: {:?}", my_offbs);
+			}
 
 			// Make forfeit signatures.
 			let connectors = ConnectorChain::new(
@@ -484,7 +562,7 @@ impl Wallet {
 					(vtxos, tx)
 				},
 				// If a new round started meanwhile, pick up on that one.
-				rpc::round_event::Event::Start(rpc::RoundStart { round_id: id }) => {
+				rpc::round_event::Event::Start(rpc::RoundStart { round_id: id, .. }) => {
 					error!("Unexpected new round start...");
 					round_id = id;
 					continue 'round;
@@ -504,20 +582,11 @@ impl Wallet {
 				warn!("Couldn't broadcast round tx: {}", e);
 			}
 
-			// Now we have to extract our own vtxos from the tree.
-			// Initially this will just be one, our change.
-			if let Some(change) = change {
-				let leaf_idx = {
-					let mut iter = vtxos.spec.find_leaf_idxs(&change);
-					let ret = iter.next().context("asp didn't include our change")?;
-					if iter.next().is_some() {
-						error!("Our change was included twice??");
-					}
-					ret
-				};
-				self.add_new_vtxo(&vtxos, leaf_idx)?;
-			} else {
-				info!("We used up all our money..");
+			// Then add our change vtxo(s) by just checking all vtxos that might be ours.
+			for (idx, dest) in vtxos.spec.vtxos.iter().enumerate() {
+				if dest.pubkey == vtxo_key.public_key() {
+					self.add_new_vtxo(&vtxos, idx)?;
+				}
 			}
 
 			// And remove the input vtxos.

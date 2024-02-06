@@ -9,7 +9,6 @@ use bitcoin::{address, Address, Amount};
 use bitcoin::secp256k1::PublicKey;
 use clap::Parser;
 
-use ark::Destination;
 use noah::{Wallet, Config};
 
 
@@ -52,6 +51,8 @@ enum Command {
 		pubkey: PublicKey,
 		amount: Amount,
 	},
+	#[command()]
+	OffboardAll,
 	#[command()]
 	StartExit,
 	#[command()]
@@ -100,12 +101,8 @@ async fn inner_main() -> anyhow::Result<()> {
 	let mut w = Wallet::open(cfg.clone()).await.context("error opening wallet")?;
 	match cli.command {
 		Command::Create { .. } => unreachable!(),
-		Command::GetAddress => {
-			println!("{}", w.get_new_onchain_address()?);
-		},
-		Command::GetVtxoPubkey => {
-			println!("{}", w.vtxo_pubkey());
-		}
+		Command::GetAddress => println!("{}", w.get_new_onchain_address()?),
+		Command::GetVtxoPubkey => println!("{}", w.vtxo_pubkey()),
 		Command::Balance => {
 			info!("Onchain balance: {}", w.onchain_balance()?);
 			info!("Offchain balance: {}", w.offchain_balance().await?);
@@ -119,25 +116,17 @@ async fn inner_main() -> anyhow::Result<()> {
 				info!("Got {} unclaimable exits with total value of {}", unclaimable.len(), sum);
 			}
 		},
-		Command::Onboard { amount } => {
-			w.onboard(amount).await?;
-		},
+		Command::Onboard { amount } => w.onboard(amount).await?,
 		Command::SendOnchain { address, amount } => {
 			let addr = address.require_network(cfg.network).with_context(|| {
 				format!("address is not valid for configured network {}", cfg.network)
 			})?;
 			w.send_onchain(addr, amount)?;
 		},
-		Command::Send { pubkey, amount } => {
-			let dest = Destination { pubkey, amount };
-			w.send_payment(dest).await?;
-		},
-		Command::StartExit => {
-			w.start_unilateral_exit().await?;
-		},
-		Command::ClaimExit => {
-			w.claim_unilateral_exit().await?;
-		},
+		Command::Send { pubkey, amount } => w.send_payment(pubkey, amount).await?,
+		Command::OffboardAll => w.offboard_all().await?,
+		Command::StartExit => w.start_unilateral_exit().await?,
+		Command::ClaimExit => w.claim_unilateral_exit().await?,
 
 		// dev commands
 

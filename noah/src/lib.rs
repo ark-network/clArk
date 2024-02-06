@@ -226,6 +226,12 @@ impl Wallet {
 			leaf_idx: leaf_idx,
 			exit_branch: exit_branch,
 		};
+
+		if self.db.has_forfeited_vtxo(vtxo.id())? {
+			debug!("Not adding vtxo {} because we previously forfeited it", vtxo.id());
+			return Ok(());
+		}
+
 		if self.db.get_vtxo(vtxo.id()).ok().flatten().is_none() {
 			debug!("Storing new vtxo {} with value {}", vtxo.id(), vtxo.spec().amount);
 			self.db.store_vtxo(vtxo).context("failed to store vtxo")?;
@@ -290,6 +296,7 @@ impl Wallet {
 
 	pub async fn send_payment(&mut self, destination: Destination) -> anyhow::Result<()> {
 		self.sync_ark().await.context("ark sync error")?;
+		let current_height = self.onchain.tip()?.0;
 
 		//TODO(stevenroose) impl key derivation
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
@@ -297,6 +304,7 @@ impl Wallet {
 		// Prepare the payment.
 		let input_vtxos = self.db.get_all_vtxos()?;
 		let vtxo_ids = input_vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();
+		debug!("Spending vtxos: {:?}", vtxo_ids);
 		let change = {
 			let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 			if sum < destination.amount {
@@ -515,6 +523,8 @@ impl Wallet {
 			// And remove the input vtxos.
 			for v in input_vtxos {
 				self.db.remove_vtxo(v.id()).context("failed to drop input vtxo")?;
+				self.db.store_forfeited_vtxo(v.id(), current_height)
+					.context("failed to store forfeited vtxo")?;
 			}
 
 			info!("Finished payment");

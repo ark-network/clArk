@@ -63,8 +63,6 @@ pub struct Wallet {
 	// ASP stuff
 	asp: rpc::ArkServiceClient<tonic::transport::Channel>,
 	ark_info: ArkInfo,
-	// cache
-	last_offboard_feerate: Option<FeeRate>,
 }
 
 impl Wallet {
@@ -128,7 +126,7 @@ impl Wallet {
 			}
 		};
 
-		Ok(Wallet { config, db, onchain, vtxo_seed, asp, ark_info, last_offboard_feerate: None })
+		Ok(Wallet { config, db, onchain, vtxo_seed, asp, ark_info })
 	}
 
 	pub fn get_new_onchain_address(&mut self) -> anyhow::Result<Address> {
@@ -358,8 +356,7 @@ impl Wallet {
 
 		// do a quick check to fail early if we don't have enough money
 		let maybe_fee = OffboardRequest::calculate_fee(
-			&addr.script_pubkey(),
-			self.last_offboard_feerate.unwrap_or(FeeRate::from_sat_per_vb(10).unwrap()),
+			&addr.script_pubkey(), FeeRate::from_sat_per_vb(1).unwrap(),
 		).expect("script from address");
 		let in_sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 		if in_sum < amount + maybe_fee {
@@ -428,7 +425,6 @@ impl Wallet {
 			}
 		};
 
-		self.last_offboard_feerate = Some(offboard_feerate);
 		let (input_vtxos, vtxo_reqs, offb_reqs) = round_input(round_id, offboard_feerate)
 			.context("error providing round input")?;
 		let vtxo_ids = input_vtxos.iter().map(|v| v.id()).collect::<HashSet<_>>();

@@ -11,8 +11,6 @@ use bitcoin::{
 };
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 
-use ark::P2TR_DUST;
-
 use crate::exit;
 use crate::psbt::PsbtInputExt;
 
@@ -194,7 +192,7 @@ impl Wallet {
 		let template_size = {
 			let mut b = self.wallet.build_tx();
 			Wallet::add_anchors(&mut b, anchors);
-			b.add_recipient(change_addr.address.script_pubkey(), package_fee + P2TR_DUST);
+			b.add_recipient(change_addr.address.script_pubkey(), package_fee + ark::P2TR_DUST_SAT);
 			b.fee_rate(urgent_fee_rate);
 			let mut psbt = b.finish().expect("failed to craft anchor spend template");
 			let finalized = self.wallet.sign(&mut psbt, SignOptions::default())

@@ -20,23 +20,28 @@ use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 
 pub const P2TR_DUST_VB: u64 = 110;
 /// 330 satoshis
-pub const P2TR_DUST: u64 = P2TR_DUST_VB * 3;
+pub const P2TR_DUST_SAT: u64 = P2TR_DUST_VB * 3;
+pub const P2TR_DUST: Amount = Amount::from_sat(P2TR_DUST_SAT);
 
 pub const P2WPKH_DUST_VB: u64 = 90;
 /// 294 satoshis
-pub const P2WPKH_DUST: u64 = P2WPKH_DUST_VB * 3;
+pub const P2WPKH_DUST_SAT: u64 = P2WPKH_DUST_VB * 3;
+pub const P2WPKH_DUST: Amount = Amount::from_sat(P2WPKH_DUST_SAT);
 
 pub const P2PKH_DUST_VB: u64 = 182;
 /// 546 satoshis
-pub const P2PKH_DUST: u64 = P2PKH_DUST_VB * 3;
+pub const P2PKH_DUST_SAT: u64 = P2PKH_DUST_VB * 3;
+pub const P2PKH_DUST: Amount = Amount::from_sat(P2PKH_DUST_SAT);
 
 pub const P2SH_DUST_VB: u64 = 180;
 /// 540 satoshis
-pub const P2SH_DUST: u64 = P2PKH_DUST_VB * 3;
+pub const P2SH_DUST_SAT: u64 = P2PKH_DUST_VB * 3;
+pub const P2SH_DUST: Amount = Amount::from_sat(P2SH_DUST_SAT);
 
 pub const P2WSH_DUST_VB: u64 = 110;
 /// 330 satoshis
-pub const P2WSH_DUST: u64 = P2TR_DUST_VB * 3;
+pub const P2WSH_DUST_SAT: u64 = P2TR_DUST_VB * 3;
+pub const P2WSH_DUST: Amount = Amount::from_sat(P2WSH_DUST_SAT);
 
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -54,7 +59,7 @@ pub struct OffboardRequest {
 }
 
 impl OffboardRequest {
-	fn calculate_fee(script: &Script, fee_rate: FeeRate) -> Option<Amount> {
+	pub fn calculate_fee(script: &Script, fee_rate: FeeRate) -> Option<Amount> {
 		// NB We calculate the required extra fee as the "dust" fee for the given feerate.
 		// We take Bitcoin's dust amounts, which are calculated at 3 sat/vb, but then
 		// calculated for the given feerate. For more on dust, see:

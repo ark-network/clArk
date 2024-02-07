@@ -1,8 +1,10 @@
 
+#[macro_use] extern crate anyhow;
 #[macro_use] extern crate log;
 
 use std::{fs, process};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::Context;
 use bitcoin::{address, Address, Amount};
@@ -41,14 +43,18 @@ enum Command {
 	Onboard {
 		amount: Amount,
 	},
+	/// Send using the built-in on-chain wallet.
 	#[command()]
 	SendOnchain {
 		address: Address<address::NetworkUnchecked>,
 		amount: Amount,
 	},
+	/// Send money through Ark.
 	#[command()]
 	Send {
-		pubkey: PublicKey,
+		/// Destination for the payment, this can either be an on-chain address
+		/// or a public key for an Ark payment.
+		destination: String,
 		amount: Amount,
 	},
 	#[command()]
@@ -123,7 +129,20 @@ async fn inner_main() -> anyhow::Result<()> {
 			})?;
 			w.send_onchain(addr, amount)?;
 		},
-		Command::Send { pubkey, amount } => w.send_payment(pubkey, amount).await?,
+		Command::Send { destination, amount } => {
+			if let Ok(pk) = PublicKey::from_str(&destination) {
+				debug!("Sending to Ark public key {}", pk);
+				w.send_ark_payment(pk, amount).await?;
+			} else if let Ok(addr) = Address::from_str(&destination) {
+				let addr = addr.require_network(cfg.network).with_context(|| {
+					format!("address is not valid for configured network {}", cfg.network)
+				})?;
+				debug!("Sending to on-chain address {}", addr);
+				w.send_ark_onchain_payment(addr, amount).await?;
+			} else {
+				bail!("Invalid destination");
+			}
+		},
 		Command::OffboardAll => w.offboard_all().await?,
 		Command::StartExit => w.start_unilateral_exit().await?,
 		Command::ClaimExit => w.claim_unilateral_exit().await?,

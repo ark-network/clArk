@@ -543,6 +543,11 @@ impl Wallet {
 				bail!("asp didn't include all of our offboards, missing: {:?}", my_offbs);
 			}
 
+			// Check that our cosign key is included in the cosigners.
+			if !vtxo_tree.cosigners.contains(&cosign_key.public_key()) {
+				bail!("asp didn't include our cosign key in the vtxo tree");
+			}
+
 			// Make forfeit signatures.
 			let connectors = ConnectorChain::new(
 				forfeit_nonces.values().next().unwrap().len(),

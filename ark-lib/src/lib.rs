@@ -169,7 +169,7 @@ pub struct VtxoSpec {
 	pub asp_pubkey: PublicKey,
 	pub expiry_height: u32,
 	pub exit_delta: u16,
-	/// The amount of the vtxo itself, this is either the unlock tx our the
+	/// The amount of the vtxo itself, this is either the reveal tx our the
 	/// vtxo tree output. It does not include budget for fees, so f.e. to
 	/// calculate the onboard amount needed for this vtxo, fee budget should
 	/// be added.
@@ -208,7 +208,7 @@ pub enum Vtxo {
 		spec: VtxoSpec,
 		/// The on-chain utxo of the onboard tx.
 		utxo: OutPoint,
-		unlock_tx_signature: schnorr::Signature,
+		reveal_tx_signature: schnorr::Signature,
 	},
 	Round {
 		spec: VtxoSpec,

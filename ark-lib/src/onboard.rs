@@ -14,8 +14,8 @@ use bitcoin::sighash::{self, SighashCache, TapSighash};
 use crate::{fee, musig, util, Vtxo, VtxoSpec};
 
 
-/// The total signed tx vsize of an unlock tx.
-const UNLOCK_TX_VSIZE: usize = 154;
+/// The total signed tx vsize of a reveal tx.
+const REVEAL_TX_VSIZE: usize = 154;
 
 fn onboard_taproot(spec: &VtxoSpec) -> taproot::TaprootSpendInfo {
 	let expiry = util::timelock_sign(spec.expiry_height, spec.asp_pubkey.x_only_public_key().0);
@@ -42,7 +42,7 @@ pub fn onboard_spk(spec: &VtxoSpec) -> ScriptBuf {
 
 /// The additional amount that needs to be sent into the onboard tx.
 pub fn onboard_surplus() -> Amount {
-	fee::DUST + Amount::from_sat(UNLOCK_TX_VSIZE as u64) // 1 sat/vb
+	fee::DUST + Amount::from_sat(REVEAL_TX_VSIZE as u64) // 1 sat/vb
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,7 +59,7 @@ pub struct PrivateUserPart {
 }
 
 pub fn new_user(spec: VtxoSpec, utxo: OutPoint) -> (UserPart, PrivateUserPart) {
-	let (unlock_sighash, _tx) = unlock_tx_sighash(&spec, utxo);
+	let (reveal_sighash, _tx) = reveal_tx_sighash(&spec, utxo);
 	let (agg, _) = musig::tweaked_key_agg(
 		[spec.user_pubkey, spec.asp_pubkey], onboard_taptweak(&spec).to_byte_array(),
 	);
@@ -67,7 +67,7 @@ pub fn new_user(spec: VtxoSpec, utxo: OutPoint) -> (UserPart, PrivateUserPart) {
 		&musig::SECP,
 		musig::MusigSessionId::assume_unique_per_nonce_gen(rand::random()),
 		musig::pubkey_to(spec.user_pubkey),
-		musig::zkp::Message::from_digest(unlock_sighash.to_byte_array()),
+		musig::zkp::Message::from_digest(reveal_sighash.to_byte_array()),
 		None,
 	).expect("non-zero session id");
 
@@ -85,8 +85,8 @@ pub struct AspPart {
 }
 
 pub fn new_asp(user: &UserPart, key: &KeyPair) -> AspPart {
-	let (unlock_sighash, _unlock_tx) = unlock_tx_sighash(&user.spec, user.utxo);
-	let msg = unlock_sighash.to_byte_array();
+	let (reveal_sighash, _reveal_tx) = reveal_tx_sighash(&user.spec, user.utxo);
+	let msg = reveal_sighash.to_byte_array();
 	let tweak = onboard_taptweak(&user.spec);
 	let (pub_nonce, sig) = musig::deterministic_partial_sign(
 		key, [user.spec.user_pubkey], [user.nonce], msg, Some(tweak.to_byte_array()),
@@ -97,7 +97,7 @@ pub fn new_asp(user: &UserPart, key: &KeyPair) -> AspPart {
 	}
 }
 
-pub fn create_unlock_tx(
+pub fn create_reveal_tx(
 	spec: &VtxoSpec,
 	utxo: OutPoint,
 	signature: Option<&schnorr::Signature>,
@@ -127,17 +127,17 @@ pub fn create_unlock_tx(
 	}
 }
 
-pub fn unlock_tx_sighash(spec: &VtxoSpec, utxo: OutPoint) -> (TapSighash, Transaction) {
-	let unlock_tx = create_unlock_tx(spec, utxo, None);
+pub fn reveal_tx_sighash(spec: &VtxoSpec, utxo: OutPoint) -> (TapSighash, Transaction) {
+	let reveal_tx = create_reveal_tx(spec, utxo, None);
 	let prev = TxOut {
 		script_pubkey: onboard_spk(&spec),
 		//TODO(stevenroose) consider storing both leaf and input values in vtxo struct
 		value: spec.amount.to_sat() + onboard_surplus().to_sat(),
 	};
-	let sighash = SighashCache::new(&unlock_tx).taproot_key_spend_signature_hash(
+	let sighash = SighashCache::new(&reveal_tx).taproot_key_spend_signature_hash(
 		0, &sighash::Prevouts::All(&[&prev]), sighash::TapSighashType::Default,
 	).expect("matching prevouts");
-	(sighash, unlock_tx)
+	(sighash, reveal_tx)
 }
 
 pub fn finish(
@@ -146,36 +146,36 @@ pub fn finish(
 	private: PrivateUserPart,
 	key: &KeyPair,
 ) -> Vtxo {
-	let (unlock_sighash, _unlock_tx) = unlock_tx_sighash(&user.spec, user.utxo);
+	let (reveal_sighash, _reveal_tx) = reveal_tx_sighash(&user.spec, user.utxo);
 	let agg_nonce = musig::nonce_agg([user.nonce, asp.nonce]);
 	let (_user_sig, final_sig) = musig::partial_sign(
 		[user.spec.user_pubkey, user.spec.asp_pubkey],
 		agg_nonce,
 		key,
 		private.sec_nonce,
-		unlock_sighash.to_byte_array(),
+		reveal_sighash.to_byte_array(),
 		Some(onboard_taptweak(&user.spec).to_byte_array()),
 		Some(&[asp.signature]),
 	);
 	let final_sig = final_sig.expect("we provided the other sig");
 	debug_assert!(util::SECP.verify_schnorr(
 		&final_sig,
-		&secp256k1::Message::from_slice(&unlock_sighash[..]).unwrap(),
+		&secp256k1::Message::from_slice(&reveal_sighash[..]).unwrap(),
 		&onboard_taproot(&user.spec).output_key().to_inner(),
-	).is_ok(), "invalid unlock tx signature produced");
+	).is_ok(), "invalid reveal tx signature produced");
 
 	Vtxo::Onboard {
 		utxo: user.utxo,
 		spec: user.spec,
-		unlock_tx_signature: final_sig,
+		reveal_tx_signature: final_sig,
 	}
 }
 
 /// Returns [None] when [Vtxo] is not an onboard vtxo.
-pub fn signed_unlock_tx(vtxo: &Vtxo) -> Option<Transaction> {
-	if let Vtxo::Onboard { ref spec, utxo, unlock_tx_signature } = vtxo {
-		let ret = create_unlock_tx(spec, *utxo, Some(unlock_tx_signature));
-		assert_eq!(ret.vsize(), UNLOCK_TX_VSIZE);
+pub fn signed_reveal_tx(vtxo: &Vtxo) -> Option<Transaction> {
+	if let Vtxo::Onboard { ref spec, utxo, reveal_tx_signature } = vtxo {
+		let ret = create_reveal_tx(spec, *utxo, Some(reveal_tx_signature));
+		assert_eq!(ret.vsize(), REVEAL_TX_VSIZE);
 		Some(ret)
 	} else {
 		None
@@ -203,6 +203,6 @@ mod test {
 		let (user, upriv) = new_user(spec, utxo);
 		let asp = new_asp(&user, &key);
 		let vtxo = finish(user, asp, upriv, &key);
-		let _unlock_tx = signed_unlock_tx(&vtxo).unwrap();
+		let _reveal_tx = signed_reveal_tx(&vtxo).unwrap();
 	}
 }

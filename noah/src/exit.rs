@@ -62,22 +62,22 @@ impl Wallet {
 		'vtxo: for vtxo in vtxos {
 			let id = vtxo.id();
 			match vtxo {
-				Vtxo::Onboard { spec, utxo, unlock_tx_signature } => {
-					let unlock_tx = ark::onboard::create_unlock_tx(
-						&spec, utxo, Some(&unlock_tx_signature),
+				Vtxo::Onboard { spec, utxo, reveal_tx_signature } => {
+					let reveal_tx = ark::onboard::create_reveal_tx(
+						&spec, utxo, Some(&reveal_tx_signature),
 					);
 
-					debug!("Broadcasting unlock tx for vtxo {}: {}", id, unlock_tx.txid());
-					if let Err(e) = self.onchain.broadcast_tx(&unlock_tx) {
-						error!("Error broadcasting unlock tx for onboard vtxo {}: {}", id, e);
+					debug!("Broadcasting reveal tx for vtxo {}: {}", id, reveal_tx.txid());
+					if let Err(e) = self.onchain.broadcast_tx(&reveal_tx) {
+						error!("Error broadcasting reveal tx for onboard vtxo {}: {}", id, e);
 						continue;
 					}
-					total_size += unlock_tx.vsize();
+					total_size += reveal_tx.vsize();
 
 					started.push(id);
-					let utxo = OutPoint::new(unlock_tx.txid(), 0);
+					let utxo = OutPoint::new(reveal_tx.txid(), 0);
 					new_claim_inputs.push(ClaimInput { utxo, spec });
-					fee_anchors.push(OutPoint::new(unlock_tx.txid(), 1));
+					fee_anchors.push(OutPoint::new(reveal_tx.txid(), 1));
 				},
 				Vtxo::Round { spec, utxo: _, leaf_idx: _, exit_branch } => {
 					debug!("Broadcasting {} txs of exit branch for vtxo {}: {:?}",

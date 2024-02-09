@@ -63,17 +63,30 @@ pub struct ForfeitNonces {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RoundProposal {
+pub struct VtxoProposal {
     #[prost(uint64, tag = "1")]
     pub round_id: u64,
     #[prost(bytes = "vec", tag = "2")]
     pub vtxos_spec: ::prost::alloc::vec::Vec<u8>,
+    /// / The unsigned round tx.
     #[prost(bytes = "vec", tag = "3")]
     pub round_tx: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", repeated, tag = "4")]
     pub vtxos_signers: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(bytes = "vec", repeated, tag = "5")]
     pub vtxos_agg_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundProposal {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
+    /// / Completely signed vtxo tree.
+    #[prost(bytes = "vec", tag = "2")]
+    pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+    /// / The unsigned round tx.
+    #[prost(bytes = "vec", tag = "3")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, repeated, tag = "6")]
     pub forfeit_nonces: ::prost::alloc::vec::Vec<ForfeitNonces>,
 }
@@ -82,15 +95,17 @@ pub struct RoundProposal {
 pub struct RoundFinished {
     #[prost(uint64, tag = "1")]
     pub round_id: u64,
+    /// / Completely signed vtxo tree.
     #[prost(bytes = "vec", tag = "2")]
     pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+    /// / The signed round tx.
     #[prost(bytes = "vec", tag = "3")]
     pub round_tx: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RoundEvent {
-    #[prost(oneof = "round_event::Event", tags = "1, 2, 3")]
+    #[prost(oneof = "round_event::Event", tags = "1, 2, 3, 4")]
     pub event: ::core::option::Option<round_event::Event>,
 }
 /// Nested message and enum types in `RoundEvent`.
@@ -101,8 +116,10 @@ pub mod round_event {
         #[prost(message, tag = "1")]
         Start(super::RoundStart),
         #[prost(message, tag = "2")]
-        Proposal(super::RoundProposal),
+        VtxoProposal(super::VtxoProposal),
         #[prost(message, tag = "3")]
+        RoundProposal(super::RoundProposal),
+        #[prost(message, tag = "4")]
         Finished(super::RoundFinished),
     }
 }
@@ -150,19 +167,18 @@ pub struct ForfeitSignatures {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct VtxoSignatures {
+pub struct ForfeitSignaturesRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub signatures: ::prost::alloc::vec::Vec<ForfeitSignatures>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VtxoSignaturesRequest {
+    /// / The cosign pubkey these signatures are for.
     #[prost(bytes = "vec", tag = "1")]
     pub pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", repeated, tag = "2")]
     pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RoundSignatures {
-    #[prost(message, repeated, tag = "1")]
-    pub forfeit: ::prost::alloc::vec::Vec<ForfeitSignatures>,
-    #[prost(message, optional, tag = "2")]
-    pub vtxo: ::core::option::Option<VtxoSignatures>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -210,9 +226,13 @@ pub mod ark_service_server {
             &self,
             request: tonic::Request<super::SubmitPaymentRequest>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
-        async fn provide_signatures(
+        async fn provide_vtxo_signatures(
             &self,
-            request: tonic::Request<super::RoundSignatures>,
+            request: tonic::Request<super::VtxoSignaturesRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        async fn provide_forfeit_signatures(
+            &self,
+            request: tonic::Request<super::ForfeitSignaturesRequest>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
     }
     /// / Public ark service for arkd.
@@ -567,13 +587,13 @@ pub mod ark_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/arkd.ArkService/ProvideSignatures" => {
+                "/arkd.ArkService/ProvideVtxoSignatures" => {
                     #[allow(non_camel_case_types)]
-                    struct ProvideSignaturesSvc<T: ArkService>(pub Arc<T>);
+                    struct ProvideVtxoSignaturesSvc<T: ArkService>(pub Arc<T>);
                     impl<
                         T: ArkService,
-                    > tonic::server::UnaryService<super::RoundSignatures>
-                    for ProvideSignaturesSvc<T> {
+                    > tonic::server::UnaryService<super::VtxoSignaturesRequest>
+                    for ProvideVtxoSignaturesSvc<T> {
                         type Response = super::Empty;
                         type Future = BoxFuture<
                             tonic::Response<Self::Response>,
@@ -581,11 +601,12 @@ pub mod ark_service_server {
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::RoundSignatures>,
+                            request: tonic::Request<super::VtxoSignaturesRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ArkService>::provide_signatures(&inner, request).await
+                                <T as ArkService>::provide_vtxo_signatures(&inner, request)
+                                    .await
                             };
                             Box::pin(fut)
                         }
@@ -597,7 +618,57 @@ pub mod ark_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
-                        let method = ProvideSignaturesSvc(inner);
+                        let method = ProvideVtxoSignaturesSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/ProvideForfeitSignatures" => {
+                    #[allow(non_camel_case_types)]
+                    struct ProvideForfeitSignaturesSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::ForfeitSignaturesRequest>
+                    for ProvideForfeitSignaturesSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ForfeitSignaturesRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::provide_forfeit_signatures(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = ProvideForfeitSignaturesSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

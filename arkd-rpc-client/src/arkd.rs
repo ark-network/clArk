@@ -63,17 +63,30 @@ pub struct ForfeitNonces {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RoundProposal {
+pub struct VtxoProposal {
     #[prost(uint64, tag = "1")]
     pub round_id: u64,
     #[prost(bytes = "vec", tag = "2")]
     pub vtxos_spec: ::prost::alloc::vec::Vec<u8>,
+    /// / The unsigned round tx.
     #[prost(bytes = "vec", tag = "3")]
     pub round_tx: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", repeated, tag = "4")]
     pub vtxos_signers: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
     #[prost(bytes = "vec", repeated, tag = "5")]
     pub vtxos_agg_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RoundProposal {
+    #[prost(uint64, tag = "1")]
+    pub round_id: u64,
+    /// / Completely signed vtxo tree.
+    #[prost(bytes = "vec", tag = "2")]
+    pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+    /// / The unsigned round tx.
+    #[prost(bytes = "vec", tag = "3")]
+    pub round_tx: ::prost::alloc::vec::Vec<u8>,
     #[prost(message, repeated, tag = "6")]
     pub forfeit_nonces: ::prost::alloc::vec::Vec<ForfeitNonces>,
 }
@@ -82,15 +95,17 @@ pub struct RoundProposal {
 pub struct RoundFinished {
     #[prost(uint64, tag = "1")]
     pub round_id: u64,
+    /// / Completely signed vtxo tree.
     #[prost(bytes = "vec", tag = "2")]
     pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+    /// / The signed round tx.
     #[prost(bytes = "vec", tag = "3")]
     pub round_tx: ::prost::alloc::vec::Vec<u8>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RoundEvent {
-    #[prost(oneof = "round_event::Event", tags = "1, 2, 3")]
+    #[prost(oneof = "round_event::Event", tags = "1, 2, 3, 4")]
     pub event: ::core::option::Option<round_event::Event>,
 }
 /// Nested message and enum types in `RoundEvent`.
@@ -101,8 +116,10 @@ pub mod round_event {
         #[prost(message, tag = "1")]
         Start(super::RoundStart),
         #[prost(message, tag = "2")]
-        Proposal(super::RoundProposal),
+        VtxoProposal(super::VtxoProposal),
         #[prost(message, tag = "3")]
+        RoundProposal(super::RoundProposal),
+        #[prost(message, tag = "4")]
         Finished(super::RoundFinished),
     }
 }
@@ -150,19 +167,18 @@ pub struct ForfeitSignatures {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct VtxoSignatures {
+pub struct ForfeitSignaturesRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub signatures: ::prost::alloc::vec::Vec<ForfeitSignatures>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VtxoSignaturesRequest {
+    /// / The cosign pubkey these signatures are for.
     #[prost(bytes = "vec", tag = "1")]
     pub pubkey: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", repeated, tag = "2")]
     pub signatures: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct RoundSignatures {
-    #[prost(message, repeated, tag = "1")]
-    pub forfeit: ::prost::alloc::vec::Vec<ForfeitSignatures>,
-    #[prost(message, optional, tag = "2")]
-    pub vtxo: ::core::option::Option<VtxoSignatures>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -388,9 +404,9 @@ pub mod ark_service_client {
                 .insert(GrpcMethod::new("arkd.ArkService", "SubmitPayment"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn provide_signatures(
+        pub async fn provide_vtxo_signatures(
             &mut self,
-            request: impl tonic::IntoRequest<super::RoundSignatures>,
+            request: impl tonic::IntoRequest<super::VtxoSignaturesRequest>,
         ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
             self.inner
                 .ready()
@@ -403,11 +419,33 @@ pub mod ark_service_client {
                 })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
-                "/arkd.ArkService/ProvideSignatures",
+                "/arkd.ArkService/ProvideVtxoSignatures",
             );
             let mut req = request.into_request();
             req.extensions_mut()
-                .insert(GrpcMethod::new("arkd.ArkService", "ProvideSignatures"));
+                .insert(GrpcMethod::new("arkd.ArkService", "ProvideVtxoSignatures"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn provide_forfeit_signatures(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ForfeitSignaturesRequest>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/ProvideForfeitSignatures",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "ProvideForfeitSignatures"));
             self.inner.unary(req, path, codec).await
         }
     }

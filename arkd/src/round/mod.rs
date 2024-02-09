@@ -24,18 +24,23 @@ pub enum RoundEvent {
 		id: u64,
 		offboard_feerate: FeeRate,
 	},
-	Proposal {
+	VtxoProposal {
 		id: u64,
-		vtxos_spec: VtxoTreeSpec,
 		round_tx: Transaction,
+		vtxos_spec: VtxoTreeSpec,
 		vtxos_signers: Vec<PublicKey>,
 		vtxos_agg_nonces: Vec<musig::MusigAggNonce>,
+	},
+	RoundProposal {
+		id: u64,
+		round_tx: Transaction,
+		vtxos: SignedVtxoTree,
 		forfeit_nonces: HashMap<VtxoId, Vec<musig::MusigPubNonce>>,
 	},
 	Finished {
 		id: u64,
-		vtxos: SignedVtxoTree,
 		round_tx: Transaction,
+		vtxos: SignedVtxoTree,
 	},
 }
 
@@ -48,10 +53,12 @@ pub enum RoundInput {
 		cosign_pubkey: PublicKey,
 		public_nonces: Vec<musig::MusigPubNonce>,
 	},
-	Signatures {
-		vtxo_pubkey: PublicKey,
-		vtxo_signatures: Vec<musig::MusigPartialSignature>,
-		forfeit: HashMap<VtxoId, (Vec<musig::MusigPubNonce>, Vec<musig::MusigPartialSignature>)>,
+	VtxoSignatures {
+		pubkey: PublicKey,
+		signatures: Vec<musig::MusigPartialSignature>,
+	},
+	ForfeitSignatures {
+		signatures: HashMap<VtxoId, (Vec<musig::MusigPubNonce>, Vec<musig::MusigPartialSignature>)>,
 	},
 }
 
@@ -249,9 +256,10 @@ pub async fn run_round_scheduler(
 				});
 			}
 
-			// Start vtxo tree and connector chain construction
-			//
+
 			// ****************************************************************
+			// * Vtxo tree construction and signing
+			// *
 			// * - We will always store vtxo tx data from top to bottom,
 			// *   meaning from the root tx down to the leaves.
 			// ****************************************************************
@@ -317,6 +325,96 @@ pub async fn run_round_scheduler(
 			let vtxo_sighashes = vtxos_spec.sighashes(vtxos_utxo);
 			assert_eq!(vtxo_sighashes.len(), agg_vtxo_nonces.len());
 
+			// Send out vtxo proposal to signers.
+			let _ = app.round_event_tx.send(RoundEvent::VtxoProposal {
+				id: round_id,
+				round_tx: round_tx.clone(),
+				vtxos_spec: vtxos_spec.clone(),
+				vtxos_signers: cosigners.iter().copied().collect(),
+				vtxos_agg_nonces: agg_vtxo_nonces.clone(),
+			});
+
+			// Wait for signatures from users.
+			//TODO(stevenroose) we need a check to see when we have all data we need so we can skip
+			// timeout
+			let mut vtxo_part_sigs = HashMap::with_capacity(cosigners.len());
+			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_sign_time); }
+			'receive: loop {
+				tokio::select! {
+					_ = &mut timeout => break 'receive,
+					input = round_input_rx.recv() => match input.expect("broken channel") {
+						RoundInput::VtxoSignatures { pubkey, signatures } => {
+							if !cosigners.contains(&pubkey) {
+								debug!("Received signatures from non-signer: {}", pubkey);
+								continue 'receive;
+							}
+							trace!("Received signatures from cosigner {}", pubkey);
+
+							if validate_partial_vtxo_sigs(
+								cosigners.iter().copied(),
+								&agg_vtxo_nonces,
+								&vtxo_sighashes,
+								vtxos_spec.cosign_taptweak().to_byte_array(),
+								pubkey,
+								vtxo_pub_nonces.get(&pubkey).expect("user is cosigner"),
+								&signatures,
+							) {
+								vtxo_part_sigs.insert(pubkey, signatures);
+							} else {
+								debug!("Received invalid partial vtxo sigs from signer: {}", pubkey);
+								continue 'receive;
+							}
+						},
+						v => debug!("Received unexpected input: {:?}", v),
+					}
+				}
+			}
+
+			//TODO(stevenroose) kick out signers that didn't sign and retry
+			if cosigners.len() - 1 != vtxo_part_sigs.len() {
+				error!("Not enough vtxo partial signatures! ({} != {})",
+					cosigners.len() - 1, vtxo_part_sigs.len());
+				continue 'round;
+			}
+
+			// Combine the vtxo signatures.
+			#[cfg(debug_assertions)]
+			let mut partial_sigs = Vec::with_capacity(nb_nodes);
+			let mut final_vtxo_sigs = Vec::with_capacity(nb_nodes);
+			for (i, sec_nonce) in sec_vtxo_nonces.into_iter().enumerate() {
+				let others = vtxo_part_sigs.values().map(|s| s[i].clone()).collect::<Vec<_>>();
+				let (_partial, final_sig) = musig::partial_sign(
+					cosigners.iter().copied(),
+					agg_vtxo_nonces[i],
+					&cosign_key,
+					sec_nonce,
+					vtxo_sighashes[i].to_byte_array(),
+					Some(vtxos_spec.cosign_taptweak().to_byte_array()),
+					Some(&others),
+				);
+				final_vtxo_sigs.push(final_sig.expect("we provided others"));
+				#[cfg(debug_assertions)]
+				partial_sigs.push(_partial);
+			}
+			debug_assert!(validate_partial_vtxo_sigs(
+				cosigners.iter().copied(),
+				&agg_vtxo_nonces,
+				&vtxo_sighashes,
+				vtxos_spec.cosign_taptweak().to_byte_array(),
+				cosign_key.public_key(),
+				&pub_vtxo_nonces,
+				&partial_sigs,
+			), "our own partial signatures were wrong");
+
+			// Then construct the final signed vtxo tree.
+			let signed_vtxos = SignedVtxoTree::new(vtxos_spec, vtxos_utxo, final_vtxo_sigs);
+			debug_assert!(signed_vtxos.validate_signatures().is_ok(), "invalid signed vtxo tree");
+
+
+			// ****************************************************************
+			// * Broadcast signed vtxo tree and gather forfeit signatures
+			// ****************************************************************
+
 			// Prepare nonces for forfeit txs.
 			// We need to prepare N nonces for each of N inputs.
 			let mut forfeit_pub_nonces = HashMap::with_capacity(all_inputs.len());
@@ -333,51 +431,27 @@ pub async fn run_round_scheduler(
 				forfeit_sec_nonces.insert(input.id(), secs);
 			}
 
-			// Send out proposal to signers.
-			let _ = app.round_event_tx.send(RoundEvent::Proposal {
+			// Send out round proposal to signers.
+			let _ = app.round_event_tx.send(RoundEvent::RoundProposal {
 				id: round_id,
-				vtxos_spec: vtxos_spec.clone(),
 				round_tx: round_tx.clone(),
-				vtxos_signers: cosigners.iter().copied().collect(),
-				vtxos_agg_nonces: agg_vtxo_nonces.clone(),
+				vtxos: signed_vtxos.clone(),
 				forfeit_nonces: forfeit_pub_nonces.clone(),
 			});
 
 			// Wait for signatures from users.
 			//TODO(stevenroose) we need a check to see when we have all data we need so we can skip
 			// timeout
-			let mut vtxo_part_sigs = HashMap::with_capacity(cosigners.len());
 			let mut forfeit_part_sigs = HashMap::with_capacity(all_inputs.len());
 			tokio::pin! { let timeout = tokio::time::sleep(cfg.round_sign_time); }
 			'receive: loop {
 				tokio::select! {
 					_ = &mut timeout => break 'receive,
 					input = round_input_rx.recv() => match input.expect("broken channel") {
-						RoundInput::Signatures { vtxo_pubkey, vtxo_signatures, forfeit } => {
-							if !cosigners.contains(&vtxo_pubkey) {
-								debug!("Received signatures from non-signer: {}", vtxo_pubkey);
-								continue 'receive;
-							}
-							trace!("Received signatures from cosigner {}", vtxo_pubkey);
-
-							if validate_partial_vtxo_sigs(
-								cosigners.iter().copied(),
-								&agg_vtxo_nonces,
-								&vtxo_sighashes,
-								vtxos_spec.cosign_taptweak().to_byte_array(),
-								vtxo_pubkey,
-								vtxo_pub_nonces.get(&vtxo_pubkey).expect("user is cosigner"),
-								&vtxo_signatures,
-							) {
-								vtxo_part_sigs.insert(vtxo_pubkey, vtxo_signatures);
-							} else {
-								debug!("Received invalid partial vtxo sigs from signer: {}", vtxo_pubkey);
-								continue 'receive;
-							}
-
+						RoundInput::ForfeitSignatures { signatures } => {
 							//TODO(stevenroose) validate forfeit txs
 							let mut ok = true;
-							for (id, (nonces, sigs)) in &forfeit {
+							for (id, (nonces, sigs)) in &signatures {
 								if nonces.len() != all_inputs.len() || sigs.len() != all_inputs.len() {
 									warn!("User didn't provide enough forfeit sigs for {}", id);
 									ok = false;
@@ -386,7 +460,7 @@ pub async fn run_round_scheduler(
 							if ok {
 								//TODO(stevenroose) actually check if the forfeit sigs are
 								//for actual inputs in the round
-								forfeit_part_sigs.extend(forfeit.into_iter());
+								forfeit_part_sigs.extend(signatures.into_iter());
 							}
 
 							// Check whether we have all and can skip the loop.
@@ -402,11 +476,6 @@ pub async fn run_round_scheduler(
 			}
 
 			//TODO(stevenroose) kick out signers that didn't sign and retry
-			if cosigners.len() - 1 != vtxo_part_sigs.len() {
-				error!("Not enough vtxo partial signatures! ({} != {})",
-					cosigners.len() - 1, vtxo_part_sigs.len());
-				continue 'round;
-			}
 			if forfeit_part_sigs.len() != all_inputs.len() {
 				error!("Not enough forfeit partial signatures! ({} != {})",
 					forfeit_part_sigs.len(), all_inputs.len());
@@ -447,42 +516,12 @@ pub async fn run_round_scheduler(
 			}
 			//TODO(stevenroose) if missing forfeits, ban inputs and restart round
 
-			// Combine the vtxo signatures.
-			#[cfg(debug_assertions)]
-			let mut partial_sigs = Vec::with_capacity(nb_nodes);
-			let mut final_vtxo_sigs = Vec::with_capacity(nb_nodes);
-			for (i, sec_nonce) in sec_vtxo_nonces.into_iter().enumerate() {
-				let others = vtxo_part_sigs.values().map(|s| s[i].clone()).collect::<Vec<_>>();
-				let (_partial, final_sig) = musig::partial_sign(
-					cosigners.iter().copied(),
-					agg_vtxo_nonces[i],
-					&cosign_key,
-					sec_nonce,
-					vtxo_sighashes[i].to_byte_array(),
-					Some(vtxos_spec.cosign_taptweak().to_byte_array()),
-					Some(&others),
-				);
-				final_vtxo_sigs.push(final_sig.expect("we provided others"));
-				#[cfg(debug_assertions)]
-				partial_sigs.push(_partial);
-			}
-			debug_assert!(validate_partial_vtxo_sigs(
-				cosigners.iter().copied(),
-				&agg_vtxo_nonces,
-				&vtxo_sighashes,
-				vtxos_spec.cosign_taptweak().to_byte_array(),
-				cosign_key.public_key(),
-				&pub_vtxo_nonces,
-				&partial_sigs,
-			), "our own partial signatures were wrong");
-			
-			// Then construct the final signed vtxo tree.
-			let signed_vtxos = SignedVtxoTree::new(vtxos_spec, vtxos_utxo, final_vtxo_sigs);
-			if let Err(e) = signed_vtxos.validate() {
-				bail!("We created an incorrect vtxo tree: {}", e);
-			}
 
-			// And sign the on-chain tx.
+			// ****************************************************************
+			// * Finish the round
+			// ****************************************************************
+
+			// Sign the on-chain tx.
 			let finalized = wallet.sign(&mut round_tx_psbt, bdk::SignOptions::default())?;
 			assert!(finalized);
 			let round_tx = round_tx_psbt.extract_tx();
@@ -503,7 +542,6 @@ pub async fn run_round_scheduler(
 				vtxos: signed_vtxos.clone(),
 				round_tx: round_tx.clone(),
 			});
-
 
 			// Store forfeit txs and round info in database.
 			let round_id = round_tx.txid();

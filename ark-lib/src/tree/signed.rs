@@ -25,32 +25,22 @@ const NODE4_TX_VSIZE: u64 = 240;
 
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct VtxoTreeSpec {
-	pub cosigners: Vec<PublicKey>,
 	pub vtxos: Vec<VtxoRequest>,
+	pub cosign_agg_pk: XOnlyPublicKey,
 	pub asp_key: PublicKey,
 	pub expiry_height: u32,
 	pub exit_delta: u16,
-
-	#[serde(skip)]
-	cosign_key_agg: Option<musig::MusigKeyAggCache>,
 }
 
 impl VtxoTreeSpec {
 	pub fn new(
-		cosigners_with_asp: Vec<PublicKey>,
 		vtxos: Vec<VtxoRequest>,
+		cosign_agg_pk: XOnlyPublicKey,
 		asp_key: PublicKey,
 		expiry_height: u32,
 		exit_delta: u16,
 	) -> VtxoTreeSpec {
-		VtxoTreeSpec {
-			cosign_key_agg: Some(musig::key_agg(cosigners_with_asp.iter().copied())),
-			cosigners: cosigners_with_asp,
-			vtxos: vtxos,
-			asp_key: asp_key,
-			expiry_height: expiry_height,
-			exit_delta: exit_delta,
-		}
+		VtxoTreeSpec { vtxos, cosign_agg_pk, asp_key, expiry_height, exit_delta }
 	}
 
 	pub fn encode(&self) -> Vec<u8> {
@@ -60,18 +50,7 @@ impl VtxoTreeSpec {
 	}
 
 	pub fn decode(bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
-		let mut ret: Self = ciborium::from_reader(bytes)?;
-		ret.cosign_key_agg = Some(musig::key_agg(ret.cosigners.iter().copied()));
-		Ok(ret)
-	}
-
-	fn cosign_key_agg(&self) -> &musig::MusigKeyAggCache {
-		self.cosign_key_agg.as_ref().unwrap()
-	}
-
-	/// The aggregated cosigning key without any taptweak performed.
-	pub fn cosign_agg_pubkey(&self) -> XOnlyPublicKey {
-		musig::xonly_from(self.cosign_key_agg().agg_pk())
+		Ok(ciborium::from_reader(bytes)?)
 	}
 
 	pub fn iter_vtxos(&self) -> impl Iterator<Item = &VtxoRequest> {
@@ -130,7 +109,7 @@ impl VtxoTreeSpec {
 	pub fn cosign_taproot(&self) -> taproot::TaprootSpendInfo {
 		TaprootBuilder::new()
 			.add_leaf(0, self.expiry_clause()).unwrap()
-			.finalize(&util::SECP, self.cosign_agg_pubkey()).unwrap()
+			.finalize(&util::SECP, self.cosign_agg_pk).unwrap()
 	}
 
 	pub fn cosign_taptweak(&self) -> taproot::TapTweakHash {
@@ -274,9 +253,7 @@ impl SignedVtxoTree {
 	}
 
 	pub fn decode(bytes: &[u8]) -> Result<Self, ciborium::de::Error<io::Error>> {
-		let mut ret: Self = ciborium::from_reader(bytes)?;
-		ret.spec.cosign_key_agg = Some(musig::key_agg(ret.spec.cosigners.iter().copied()));
-		Ok(ret)
+		Ok(ciborium::from_reader(bytes)?)
 	}
 
 	fn finalize_tx(tx: &mut Transaction, sig: &schnorr::Signature) {
@@ -351,8 +328,8 @@ mod test {
 		let (mut had2, mut had3, mut had4) = (false, false, false);
 		for n in 2..5 {
 			let spec = VtxoTreeSpec::new(
-				vec![key1.public_key(), key2.public_key()],
 				vec![dest.clone(); n],
+				musig::combine_keys([key1.public_key(), key2.public_key()]),
 				key1.public_key(),
 				100_000,
 				2016,

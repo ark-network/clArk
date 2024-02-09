@@ -63,10 +63,10 @@ pub enum RoundInput {
 }
 
 fn validate_payment(
-    inputs: &[Vtxo],
-    outputs: &[VtxoRequest],
-    offboards: &[OffboardRequest],
-    offboard_feerate: FeeRate,
+	inputs: &[Vtxo],
+	outputs: &[VtxoRequest],
+	offboards: &[OffboardRequest],
+	offboard_feerate: FeeRate,
 ) -> bool {
 	let mut in_set = HashSet::with_capacity(inputs.len());
 	let mut in_sum = Amount::ZERO;
@@ -84,16 +84,16 @@ fn validate_payment(
 			return false;
 		}
 	}
-    for offboard in offboards {
-        let fee = match offboard.fee(offboard_feerate) {
-            Some(v) => v,
-            None => return false,
-        };
-        out_sum += offboard.amount + fee;
+	for offboard in offboards {
+		let fee = match offboard.fee(offboard_feerate) {
+			Some(v) => v,
+			None => return false,
+		};
+		out_sum += offboard.amount + fee;
 		if out_sum > in_sum {
 			return false;
 		}
-    }
+	}
 
 	true
 }
@@ -141,7 +141,7 @@ pub async fn run_round_scheduler(
 
 	//TODO(stevenroose) somehow get these from a fee estimator service
 	let offboard_feerate = FeeRate::from_sat_per_vb(10).unwrap();
-    let round_tx_feerate = FeeRate::from_sat_per_vb(10).unwrap();
+	let round_tx_feerate = FeeRate::from_sat_per_vb(10).unwrap();
 
 	'round: loop {
 		// Sleep for the round interval, but discard all incoming messages.
@@ -220,7 +220,7 @@ pub async fn run_round_scheduler(
 							//TODO(stevenroose) somehow check if a tree using these outputs
 							//will exceed the config.nb_round_nonces number of nodes
 							all_outputs.extend(outputs);
-                            all_offboards.extend(offboards);
+							all_offboards.extend(offboards);
 							//TODO(stevenroose) handle duplicate cosign key
 							assert!(cosigners.insert(cosign_pubkey));
 							vtxo_pub_nonces.insert(cosign_pubkey, public_nonces);
@@ -267,9 +267,11 @@ pub async fn run_round_scheduler(
 			let tip = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&app.bitcoind)?;
 			let expiry = tip as u32 + cfg.vtxo_expiry_delta as u32;
 			debug!("Current tip is {}, so round vtxos will expire at {}", tip, expiry);
+
+			let cosign_agg_pk = musig::combine_keys(cosigners.iter().copied());
 			let vtxos_spec = VtxoTreeSpec::new(
-				cosigners.iter().copied().collect(),
 				all_outputs,
+				cosign_agg_pk,
 				app.master_key.public_key(),
 				expiry,
 				cfg.vtxo_exit_delta,
@@ -290,9 +292,9 @@ pub async fn run_round_scheduler(
 				b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
 				b.add_recipient(vtxos_spec.cosign_spk(), vtxos_spec.total_required_value().to_sat());
 				b.add_recipient(connector_output.script_pubkey, connector_output.value);
-                for offb in &all_offboards {
-                    b.add_recipient(offb.script_pubkey.clone(), offb.amount.to_sat());
-                }
+				for offb in &all_offboards {
+					b.add_recipient(offb.script_pubkey.clone(), offb.amount.to_sat());
+				}
 				b.fee_rate(round_tx_feerate.to_bdk());
 				b.finish().context("bdk failed to create round tx")?
 			};

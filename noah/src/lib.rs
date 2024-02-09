@@ -533,8 +533,12 @@ impl Wallet {
 			}
 
 			// Check that our cosign key is included in the cosigners.
-			if !vtxo_tree.cosigners.contains(&cosign_key.public_key()) {
+			if !vtxo_signers.contains(&cosign_key.public_key()) {
 				bail!("asp didn't include our cosign key in the vtxo tree");
+			}
+			let cosign_agg_pk = musig::combine_keys(vtxo_signers.iter().copied());
+			if cosign_agg_pk != vtxo_tree.cosign_agg_pk {
+				bail!("ASP provided incorrect aggregated cosign pubkey");
 			}
 
 			// Make vtxo signatures from top to bottom, just like sighashes are returned.

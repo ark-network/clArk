@@ -473,13 +473,17 @@ impl Wallet {
 				public_nonces: pub_nonces.iter().map(|n| n.serialize().to_vec()).collect(),
 			}).await.context("submitting payment to asp")?;
 
-			// Wait for proposal from asp.
-			let (vtxo_tree, round_tx, vtxo_signers, vtxo_agg_nonces, forfeit_nonces) = loop {
+
+			// ****************************************************************
+			// * Wait for vtxo proposal from asp.
+			// ****************************************************************
+
+			let (vtxo_tree, round_tx, vtxo_signers, vtxo_agg_nonces) = loop {
 				//TODO(stevenroose) should we really gracefully handle ASP malformed data?
 				// panicking seems kinda ok since if we can't understand the ASP,
 				// what are we even doing?
 				match events.next().await.context("events stream broke")??.event.unwrap() {
-					rpc::round_event::Event::Proposal(p) => {
+					rpc::round_event::Event::VtxoProposal(p) => {
 						assert_eq!(p.round_id, round_id, "missing messages");
 						let vtxos = VtxoTreeSpec::decode(&p.vtxos_spec)
 							.context("decoding vtxo spec")?;
@@ -492,22 +496,7 @@ impl Wallet {
 							musig::MusigAggNonce::from_slice(&k).context("invalid agg nonce")
 						}).collect::<anyhow::Result<Vec<_>>>()?;
 
-						// Directly filter the forfeit nonces only for out inputs.
-						let forfeit_nonces = p.forfeit_nonces.into_iter().filter_map(|f| {
-							let id = VtxoId::from_slice(&f.input_vtxo_id)
-								.expect("invalid vtxoid from asp"); //TODO(stevenroose) maybe handle?
-							if vtxo_ids.contains(&id) {
-								let nonces = f.pub_nonces.into_iter().map(|s| {
-									musig::MusigPubNonce::from_slice(&s)
-										.expect("invalid forfeit nonce from asp")
-								}).collect::<Vec<_>>();
-								Some((id, nonces))
-							} else {
-								None
-							}
-						}).collect::<HashMap<_, _>>();
-
-						break (vtxos, tx, cosigners, vtxo_nonces, forfeit_nonces);
+						break (vtxos, tx, cosigners, vtxo_nonces);
 					},
 					// If a new round started meanwhile, pick up on that one.
 					rpc::round_event::Event::Start(rpc::RoundStart { round_id: id, .. }) => {
@@ -548,6 +537,81 @@ impl Wallet {
 				bail!("asp didn't include our cosign key in the vtxo tree");
 			}
 
+			// Make vtxo signatures from top to bottom, just like sighashes are returned.
+			let sighashes = vtxo_tree.sighashes(vtxos_utxo);
+			assert_eq!(sighashes.len(), vtxo_agg_nonces.len());
+			let signatures = iter::zip(sec_nonces.into_iter(), iter::zip(sighashes, vtxo_agg_nonces))
+				.map(|(sec_nonce, (sighash, agg_nonce))| {
+					musig::partial_sign(
+						vtxo_signers.iter().copied(),
+						agg_nonce,
+						&cosign_key,
+						sec_nonce,
+						sighash.to_byte_array(),
+						Some(vtxo_tree.cosign_taptweak().to_byte_array()),
+						None,
+					).0
+				}).collect::<Vec<_>>();
+			self.asp.provide_vtxo_signatures(rpc::VtxoSignaturesRequest {
+				pubkey: cosign_key.public_key().serialize().to_vec(),
+				signatures: signatures.iter().map(|s| s.serialize().to_vec()).collect(),
+			}).await.context("providing signatures to asp")?;
+
+
+			// ****************************************************************
+			// * Then proceed to get a round proposal and sign forfeits
+			// ****************************************************************
+
+			// Wait for vtxo proposal from asp.
+			let (vtxos, new_round_tx, forfeit_nonces) = loop {
+				//TODO(stevenroose) should we really gracefully handle ASP malformed data?
+				// panicking seems kinda ok since if we can't understand the ASP,
+				// what are we even doing?
+				match events.next().await.context("events stream broke")??.event.unwrap() {
+					rpc::round_event::Event::RoundProposal(p) => {
+						assert_eq!(p.round_id, round_id, "missing messages");
+						let tx = bitcoin::consensus::deserialize::<Transaction>(&p.round_tx)
+							.context("decoding round tx")?;
+						let vtxos = SignedVtxoTree::decode(&p.signed_vtxos)
+							.context("decoding vtxo spec")?;
+
+						// Directly filter the forfeit nonces only for out inputs.
+						let forfeit_nonces = p.forfeit_nonces.into_iter().filter_map(|f| {
+							let id = VtxoId::from_slice(&f.input_vtxo_id)
+								.expect("invalid vtxoid from asp"); //TODO(stevenroose) maybe handle?
+							if vtxo_ids.contains(&id) {
+								let nonces = f.pub_nonces.into_iter().map(|s| {
+									musig::MusigPubNonce::from_slice(&s)
+										.expect("invalid forfeit nonce from asp")
+								}).collect::<Vec<_>>();
+								Some((id, nonces))
+							} else {
+								None
+							}
+						}).collect::<HashMap<_, _>>();
+
+						break (vtxos, tx, forfeit_nonces);
+					},
+					// If a new round started meanwhile, pick up on that one.
+					rpc::round_event::Event::Start(rpc::RoundStart { round_id: id, .. }) => {
+						error!("Unexpected new round start...");
+						round_id = id;
+						continue 'round;
+					},
+					//TODO(stevenroose) make this robust
+					other => panic!("Unexpected message: {:?}", other),
+				}
+			};
+
+			if round_tx != new_round_tx {
+				bail!("ASP changed the round tx halfway the round.");
+			}
+
+			// Validate the vtxo tree.
+			if let Err(e) = vtxos.validate_signatures() {
+				bail!("Received incorrect signed vtxo tree from asp: {}", e);
+			}
+
 			// Make forfeit signatures.
 			let connectors = ConnectorChain::new(
 				forfeit_nonces.values().next().unwrap().len(),
@@ -573,39 +637,23 @@ impl Wallet {
 				}).collect::<anyhow::Result<Vec<_>>>()?;
 				Ok((v.id(), sigs))
 			}).collect::<anyhow::Result<HashMap<_, _>>>()?;
-
-			// Make vtxo signatures from top to bottom, just like sighashes are returned.
-			let sighashes = vtxo_tree.sighashes(vtxos_utxo);
-			assert_eq!(sighashes.len(), vtxo_agg_nonces.len());
-			let signatures = iter::zip(sec_nonces.into_iter(), iter::zip(sighashes, vtxo_agg_nonces))
-				.map(|(sec_nonce, (sighash, agg_nonce))| {
-					musig::partial_sign(
-						vtxo_signers.iter().copied(),
-						agg_nonce,
-						&cosign_key,
-						sec_nonce,
-						sighash.to_byte_array(),
-						Some(vtxo_tree.cosign_taptweak().to_byte_array()),
-						None,
-					).0
-				}).collect::<Vec<_>>();
-			self.asp.provide_signatures(rpc::RoundSignatures {
-				forfeit: forfeit_signatures.into_iter().map(|(id, sigs)| {
+			self.asp.provide_forfeit_signatures(rpc::ForfeitSignaturesRequest {
+				signatures: forfeit_signatures.into_iter().map(|(id, sigs)| {
 					rpc::ForfeitSignatures {
 						input_vtxo_id: id.bytes().to_vec(),
 						pub_nonces: sigs.iter().map(|s| s.0.serialize().to_vec()).collect(),
 						signatures: sigs.iter().map(|s| s.1.serialize().to_vec()).collect(),
 					}
 				}).collect(),
-				vtxo: Some(rpc::VtxoSignatures {
-					pubkey: cosign_key.public_key().serialize().to_vec(),
-					signatures: signatures.iter().map(|s| s.serialize().to_vec()).collect(),
-				}),
 			}).await.context("providing signatures to asp")?;
 
-			// Wait for the finishing of the round.
+
+			// ****************************************************************
+			// * Wait for the finishing of the round.
+			// ****************************************************************
+
 			trace!("Waiting for round finish...");
-			let (vtxos, round_tx) = match events.next().await.context("events stream broke")??.event.unwrap() {
+			let (new_vtxos, round_tx) = match events.next().await.context("events stream broke")??.event.unwrap() {
 				rpc::round_event::Event::Finished(f) => {
 					if f.round_id != round_id {
 						bail!("Unexpected round ID from round finished event: {} != {}",
@@ -627,9 +675,8 @@ impl Wallet {
 				other => panic!("Unexpected message: {:?}", other),
 			};
 
-			// Validate the vtxo tree.
-			if let Err(e) = vtxos.validate() {
-				bail!("Received incorrect signed vtxo tree from asp: {}", e);
+			if vtxos != new_vtxos {
+				bail!("ASP changed the vtxo tree halfway the round");
 			}
 
 			// We also broadcast the tx, just to have it go around faster.

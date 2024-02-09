@@ -124,15 +124,22 @@ impl rpc::ArkService for Arc<App> {
 							offboard_feerate_sat_vkb: offboard_feerate.to_sat_per_kwu() * 4,
 						})
 					},
-					RoundEvent::Proposal {
-						id, vtxos_spec, round_tx, vtxos_signers, vtxos_agg_nonces, forfeit_nonces,
+					RoundEvent::VtxoProposal {
+						id, vtxos_spec, round_tx, vtxos_signers, vtxos_agg_nonces,
 					} => {
-						rpc::round_event::Event::Proposal(rpc::RoundProposal {
+						rpc::round_event::Event::VtxoProposal(rpc::VtxoProposal {
 							round_id: id,
 							vtxos_spec: vtxos_spec.encode(),
 							round_tx: bitcoin::consensus::serialize(&round_tx),
 							vtxos_signers: vtxos_signers.into_iter().map(|k| k.serialize().to_vec()).collect(),
 							vtxos_agg_nonces: vtxos_agg_nonces.into_iter().map(|n| n.serialize().to_vec()).collect(),
+						})
+					},
+					RoundEvent::RoundProposal { id, vtxos, round_tx, forfeit_nonces } => {
+						rpc::round_event::Event::RoundProposal(rpc::RoundProposal {
+							round_id: id,
+							signed_vtxos: vtxos.encode(),
+							round_tx: bitcoin::consensus::serialize(&round_tx),
 							forfeit_nonces: forfeit_nonces.into_iter().map(|(id, nonces)| {
 								rpc::ForfeitNonces {
 									input_vtxo_id: id.bytes().to_vec(),
@@ -206,35 +213,42 @@ impl rpc::ArkService for Arc<App> {
 		Ok(tonic::Response::new(rpc::Empty {}))
 	}
 
-	async fn provide_signatures(
+	async fn provide_vtxo_signatures(
 		&self,
-		req: tonic::Request<rpc::RoundSignatures>,
+		req: tonic::Request<rpc::VtxoSignaturesRequest>,
 	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
 		let req = req.into_inner();
 
-		let forfeit = req.forfeit.into_iter().map(|forfeit| {
-			let id = VtxoId::from_slice(&forfeit.input_vtxo_id)
-				.map_err(|e| badarg!("invalid vtxo id: {}", e))?;
-			let nonces = forfeit.pub_nonces.into_iter().map(|n| {
-				musig::MusigPubNonce::from_slice(&n)
-					.map_err(|e| badarg!("invalid forfeit nonce: {}", e))
-			}).collect::<Result<_, tonic::Status>>()?;
-			let signatures = forfeit.signatures.into_iter().map(|s| {
-				musig::MusigPartialSignature::from_slice(&s)
-					.map_err(|e| badarg!("invalid forfeit sig: {}", e))
-			}).collect::<Result<_, tonic::Status>>()?;
-			Ok((id, (nonces, signatures)))
-		}).collect::<Result<_, tonic::Status>>()?;
-
-		let vtxo = req.vtxo.ok_or_else(|| badarg!("vtxo signatures missing"))?;
-		let inp = RoundInput::Signatures {
-			vtxo_pubkey: PublicKey::from_slice(&vtxo.pubkey)
+		let inp = RoundInput::VtxoSignatures {
+			pubkey: PublicKey::from_slice(&req.pubkey)
 				.map_err(|e| badarg!("invalid pubkey: {}", e))?,
-			vtxo_signatures: vtxo.signatures.into_iter().map(|s| {
+			signatures: req.signatures.into_iter().map(|s| {
 				musig::MusigPartialSignature::from_slice(&s)
 					.map_err(|e| badarg!("invalid signature: {}", e))
 			}).collect::<Result<_, tonic::Status>>()?,
-			forfeit: forfeit,
+		};
+		self.round_input_tx.send(inp).expect("input channel closed");
+		Ok(tonic::Response::new(rpc::Empty {}))
+	}
+
+	async fn provide_forfeit_signatures(
+		&self,
+		req: tonic::Request<rpc::ForfeitSignaturesRequest>,
+	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
+		let inp = RoundInput::ForfeitSignatures {
+			signatures: req.into_inner().signatures.into_iter().map(|forfeit| {
+				let id = VtxoId::from_slice(&forfeit.input_vtxo_id)
+					.map_err(|e| badarg!("invalid vtxo id: {}", e))?;
+				let nonces = forfeit.pub_nonces.into_iter().map(|n| {
+					musig::MusigPubNonce::from_slice(&n)
+						.map_err(|e| badarg!("invalid forfeit nonce: {}", e))
+				}).collect::<Result<_, tonic::Status>>()?;
+				let signatures = forfeit.signatures.into_iter().map(|s| {
+					musig::MusigPartialSignature::from_slice(&s)
+						.map_err(|e| badarg!("invalid forfeit sig: {}", e))
+				}).collect::<Result<_, tonic::Status>>()?;
+				Ok((id, (nonces, signatures)))
+			}).collect::<Result<_, tonic::Status>>()?
 		};
 		self.round_input_tx.send(inp).expect("input channel closed");
 		Ok(tonic::Response::new(rpc::Empty {}))

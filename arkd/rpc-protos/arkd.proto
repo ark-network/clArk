@@ -14,7 +14,8 @@ service ArkService {
 
 	rpc SubscribeRounds(Empty) returns (stream RoundEvent) {}
 	rpc SubmitPayment(SubmitPaymentRequest) returns (Empty) {}
-	rpc ProvideSignatures(RoundSignatures) returns (Empty) {}
+	rpc ProvideVtxoSignatures(VtxoSignaturesRequest) returns (Empty) {}
+	rpc ProvideForfeitSignatures(ForfeitSignaturesRequest) returns (Empty) {}
 }
 
 message ArkInfo {
@@ -57,26 +58,38 @@ message ForfeitNonces {
 	repeated bytes pub_nonces = 2;
 }
 
-message RoundProposal {
+message VtxoProposal {
 	uint64 round_id = 1;
 	bytes vtxos_spec = 2;
+	/// The unsigned round tx.
 	bytes round_tx = 3;
 	repeated bytes vtxos_signers = 4;
 	repeated bytes vtxos_agg_nonces = 5;
+}
+
+message RoundProposal {
+	uint64 round_id = 1;
+	/// Completely signed vtxo tree.
+	bytes signed_vtxos = 2;
+	/// The unsigned round tx.
+	bytes round_tx = 3;
 	repeated ForfeitNonces forfeit_nonces = 6;
 }
 
 message RoundFinished {
 	uint64 round_id = 1;
+	/// Completely signed vtxo tree.
 	bytes signed_vtxos = 2;
+	/// The signed round tx.
 	bytes round_tx = 3;
 }
 
 message RoundEvent {
 	oneof event {
 		RoundStart start = 1;
-		RoundProposal proposal = 2;
-		RoundFinished finished = 3;
+		VtxoProposal vtxo_proposal = 2;
+		RoundProposal round_proposal = 3;
+		RoundFinished finished = 4;
 	};
 }
 
@@ -102,14 +115,14 @@ message ForfeitSignatures {
 	repeated bytes signatures = 3;
 }
 
-message VtxoSignatures {
-	bytes pubkey = 1;
-	repeated bytes signatures = 2;
+message ForfeitSignaturesRequest {
+	repeated ForfeitSignatures signatures = 1;
 }
 
-message RoundSignatures {
-	repeated ForfeitSignatures forfeit = 1;
-	VtxoSignatures vtxo = 2;
+message VtxoSignaturesRequest {
+	/// The cosign pubkey these signatures are for.
+	bytes pubkey = 1;
+	repeated bytes signatures = 2;
 }
 
 

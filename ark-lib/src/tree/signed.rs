@@ -23,7 +23,7 @@ const NODE3_TX_VSIZE: u64 = 197;
 const NODE4_TX_VSIZE: u64 = 240;
 
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct VtxoTreeSpec {
 	pub cosigners: Vec<PublicKey>,
 	pub vtxos: Vec<VtxoRequest>,
@@ -251,7 +251,7 @@ impl VtxoTreeSpec {
 	}
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
 pub struct SignedVtxoTree {
 	pub spec: VtxoTreeSpec,
 	pub utxo: OutPoint,
@@ -286,7 +286,7 @@ impl SignedVtxoTree {
 	}
 
 	/// Validate the signatures.
-	pub fn validate(&self) -> Result<(), String> {
+	pub fn validate_signatures(&self) -> Result<(), String> {
 		let pk = self.spec.cosign_taproot().output_key().to_inner();
 		let sighashes = self.spec.sighashes(self.utxo);
 		for (i, (sighash, sig)) in sighashes.into_iter().rev().zip(self.signatures.iter()).enumerate() {

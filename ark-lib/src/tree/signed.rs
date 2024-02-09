@@ -172,23 +172,23 @@ impl VtxoTreeSpec {
 		}
 	}
 
-	fn exit_clause(&self, payment: &VtxoRequest) -> ScriptBuf {
-		let pk = payment.pubkey.x_only_public_key().0;
+	fn exit_clause(&self, vtxo: &VtxoRequest) -> ScriptBuf {
+		let pk = vtxo.pubkey.x_only_public_key().0;
 		util::delayed_sign(self.exit_delta.try_into().unwrap(), pk)
 	}
 
-	fn leaf_taproot(&self, payment: &VtxoRequest) -> taproot::TaprootSpendInfo {
-		let joint_key = musig::combine_keys([payment.pubkey, self.asp_key]);
+	fn vtxo_taproot(&self, vtxo: &VtxoRequest) -> taproot::TaprootSpendInfo {
+		let joint_key = musig::combine_keys([vtxo.pubkey, self.asp_key]);
 		TaprootBuilder::new()
-			.add_leaf(0, self.exit_clause(payment)).unwrap()
+			.add_leaf(0, self.exit_clause(vtxo)).unwrap()
 			.finalize(&util::SECP, joint_key).unwrap()
 	}
 
-	fn leaf_spk(&self, payment: &VtxoRequest) -> ScriptBuf {
-		ScriptBuf::new_v1_p2tr_tweaked(self.leaf_taproot(payment).output_key())
+	fn vtxo_spk(&self, vtxo: &VtxoRequest) -> ScriptBuf {
+		ScriptBuf::new_v1_p2tr_tweaked(self.vtxo_taproot(vtxo).output_key())
 	}
 
-	fn leaf_tx(&self, payment: &VtxoRequest) -> Transaction {
+	fn leaf_tx(&self, vtxo: &VtxoRequest) -> Transaction {
 		Transaction {
 			version: 2,
 			lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -200,8 +200,8 @@ impl VtxoTreeSpec {
 			}],
 			output: vec![
 				TxOut {
-					script_pubkey: self.leaf_spk(payment),
-					value: payment.amount.to_sat(),
+					script_pubkey: self.vtxo_spk(vtxo),
+					value: vtxo.amount.to_sat(),
 				},
 				fee::dust_anchor(),
 			],

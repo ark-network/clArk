@@ -180,7 +180,7 @@ impl Wallet {
 		let onboard_tx = self.onchain.prepare_tx(addr, onboard_amount)?;
 		let utxo = OutPoint::new(onboard_tx.unsigned_tx.txid(), 0);
 
-		// We ask the ASP to cosign our onboard unlock tx.
+		// We ask the ASP to cosign our onboard vtxo reveal tx.
 		let (user_part, priv_user_part) = ark::onboard::new_user(spec, utxo);
 		let asp_part = {
 			let res = self.asp.request_onboard_cosign(arkd_rpc_client::OnboardCosignRequest {

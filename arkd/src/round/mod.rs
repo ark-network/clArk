@@ -7,14 +7,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Context;
 use bitcoin::{Amount, FeeRate, OutPoint, Transaction};
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{rand, KeyPair, PublicKey};
 use bitcoin::sighash::TapSighash;
 
 use ark::{musig, OffboardRequest, VtxoRequest, Vtxo, VtxoId};
 use ark::connectors::ConnectorChain;
 use ark::tree::signed::{SignedVtxoTree, VtxoTreeSpec};
 
-use crate::App;
+use crate::{SECP, App};
 use crate::database::ForfeitVtxo;
 use crate::util::FeeRateExt;
 
@@ -153,18 +153,29 @@ pub async fn run_round_scheduler(
 		// Start new round, announce.
 		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id, offboard_feerate });
 
-		// In this loop we will try to finish the round and make new attempts.
+		// Allocate this data once per round so that we can keep them 
+		let mut all_inputs = Vec::<Vtxo>::new();
+		let mut all_outputs = Vec::<VtxoRequest>::new();
+		let mut all_offboards = Vec::<OffboardRequest>::new();
+		let mut cosigners = HashSet::<PublicKey>::new();
+		let mut vtxo_pub_nonces = HashMap::new();
 		let mut allowed_inputs = HashSet::new();
+
+		// In this loop we will try to finish the round and make new attempts.
 		'attempt: loop {
 			let balance = app.sync_onchain_wallet().await.context("error syncing onchain wallet")?;
 			info!("Current wallet balance: {}", balance);
 
-			let mut all_inputs = Vec::<Vtxo>::new();
-			let mut all_outputs = Vec::<VtxoRequest>::new();
-            let mut all_offboards = Vec::<OffboardRequest>::new();
-			let mut cosigners = HashSet::<PublicKey>::new();
-			cosigners.insert(app.master_key.public_key());
-			let mut vtxo_pub_nonces = HashMap::new();
+			all_inputs.clear();
+			all_outputs.clear();
+			all_offboards.clear();
+			cosigners.clear();
+			vtxo_pub_nonces.clear();
+			// NB allowed_inputs should NOT be cleared here.
+
+			// Generate a one-time use signing key.
+			let cosign_key = KeyPair::new(&SECP, &mut rand::thread_rng());
+			cosigners.insert(cosign_key.public_key());
 
 			// Start receiving payments.
 			//TODO(stevenroose) we need a check to see when we have all data we need so we can skip
@@ -286,7 +297,7 @@ pub async fn run_round_scheduler(
 				let mut secs = Vec::with_capacity(nb_nodes);
 				let mut pubs = Vec::with_capacity(nb_nodes);
 				for _ in 0..nb_nodes {
-					let (s, p) = musig::nonce_pair(&app.master_key);
+					let (s, p) = musig::nonce_pair(&cosign_key);
 					secs.push(s);
 					pubs.push(p);
 				}
@@ -445,7 +456,7 @@ pub async fn run_round_scheduler(
 				let (_partial, final_sig) = musig::partial_sign(
 					cosigners.iter().copied(),
 					agg_vtxo_nonces[i],
-					&app.master_key,
+					&cosign_key,
 					sec_nonce,
 					vtxo_sighashes[i].to_byte_array(),
 					Some(vtxos_spec.cosign_taptweak().to_byte_array()),
@@ -460,7 +471,7 @@ pub async fn run_round_scheduler(
 				&agg_vtxo_nonces,
 				&vtxo_sighashes,
 				vtxos_spec.cosign_taptweak().to_byte_array(),
-				app.master_key.public_key(),
+				cosign_key.public_key(),
 				&pub_vtxo_nonces,
 				&partial_sigs,
 			), "our own partial signatures were wrong");

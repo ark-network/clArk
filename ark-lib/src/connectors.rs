@@ -79,6 +79,10 @@ impl ConnectorChain {
 		ConnectorChain { len, spk, utxo }
 	}
 
+	pub fn len(&self) -> usize {
+		self.len
+	}
+
 	/// Iterator over the signed transactions in this chain.
 	pub fn iter_signed_txs<'a>(&'a self, sign_key: &'a KeyPair) -> ConnectorTxIter<'a> {
 		ConnectorTxIter {

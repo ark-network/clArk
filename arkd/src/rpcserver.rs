@@ -131,8 +131,12 @@ impl rpc::ArkService for Arc<App> {
 							round_id: id,
 							vtxos_spec: vtxos_spec.encode(),
 							round_tx: bitcoin::consensus::serialize(&round_tx),
-							vtxos_signers: vtxos_signers.into_iter().map(|k| k.serialize().to_vec()).collect(),
-							vtxos_agg_nonces: vtxos_agg_nonces.into_iter().map(|n| n.serialize().to_vec()).collect(),
+							vtxos_signers: vtxos_signers.into_iter()
+								.map(|k| k.serialize().to_vec())
+								.collect(),
+							vtxos_agg_nonces: vtxos_agg_nonces.into_iter()
+								.map(|n| n.serialize().to_vec())
+								.collect(),
 						})
 					},
 					RoundEvent::RoundProposal { id, vtxos, round_tx, forfeit_nonces } => {
@@ -143,7 +147,9 @@ impl rpc::ArkService for Arc<App> {
 							forfeit_nonces: forfeit_nonces.into_iter().map(|(id, nonces)| {
 								rpc::ForfeitNonces {
 									input_vtxo_id: id.bytes().to_vec(),
-									pub_nonces: nonces.into_iter().map(|n| n.serialize().to_vec()).collect(),
+									pub_nonces: nonces.into_iter()
+										.map(|n| n.serialize().to_vec())
+										.collect(),
 								}
 							}).collect(),
 						})
@@ -236,18 +242,18 @@ impl rpc::ArkService for Arc<App> {
 		req: tonic::Request<rpc::ForfeitSignaturesRequest>,
 	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
 		let inp = RoundInput::ForfeitSignatures {
-			signatures: req.into_inner().signatures.into_iter().map(|forfeit| {
-				let id = VtxoId::from_slice(&forfeit.input_vtxo_id)
+			signatures: req.into_inner().signatures.into_iter().map(|ff| {
+				let id = VtxoId::from_slice(&ff.input_vtxo_id)
 					.map_err(|e| badarg!("invalid vtxo id: {}", e))?;
-				let nonces = forfeit.pub_nonces.into_iter().map(|n| {
+				let nonces = ff.pub_nonces.into_iter().map(|n| {
 					musig::MusigPubNonce::from_slice(&n)
 						.map_err(|e| badarg!("invalid forfeit nonce: {}", e))
 				}).collect::<Result<_, tonic::Status>>()?;
-				let signatures = forfeit.signatures.into_iter().map(|s| {
+				let signatures = ff.signatures.into_iter().map(|s| {
 					musig::MusigPartialSignature::from_slice(&s)
 						.map_err(|e| badarg!("invalid forfeit sig: {}", e))
 				}).collect::<Result<_, tonic::Status>>()?;
-				Ok((id, (nonces, signatures)))
+				Ok((id, nonces, signatures))
 			}).collect::<Result<_, tonic::Status>>()?
 		};
 		self.round_input_tx.send(inp).expect("input channel closed");

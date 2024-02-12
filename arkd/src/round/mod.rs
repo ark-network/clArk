@@ -58,7 +58,7 @@ pub enum RoundInput {
 		signatures: Vec<musig::MusigPartialSignature>,
 	},
 	ForfeitSignatures {
-		signatures: HashMap<VtxoId, (Vec<musig::MusigPubNonce>, Vec<musig::MusigPartialSignature>)>,
+		signatures: Vec<(VtxoId, Vec<musig::MusigPubNonce>, Vec<musig::MusigPartialSignature>)>,
 	},
 }
 
@@ -132,6 +132,18 @@ fn validate_partial_vtxo_sigs(
 	true
 }
 
+fn validate_forfeit_sigs(
+	connectors: &ConnectorChain,
+	user_nonces: &[musig::MusigPubNonce],
+	part_sigs: &[musig::MusigPartialSignature],
+) -> anyhow::Result<()> {
+	if user_nonces.len() != connectors.len() || part_sigs.len() != connectors.len() {
+		bail!("not enough forfeit signatures provided");
+	}
+
+	Ok(())
+}
+
 /// This method is called from a tokio thread so it can be long-lasting.
 pub async fn run_round_scheduler(
 	app: Arc<App>,
@@ -161,7 +173,7 @@ pub async fn run_round_scheduler(
 		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id, offboard_feerate });
 
 		// Allocate this data once per round so that we can keep them 
-		let mut all_inputs = Vec::<Vtxo>::new();
+		let mut all_inputs = HashMap::<VtxoId, Vtxo>::new();
 		let mut all_outputs = Vec::<VtxoRequest>::new();
 		let mut all_offboards = Vec::<OffboardRequest>::new();
 		let mut cosigners = HashSet::<PublicKey>::new();
@@ -216,7 +228,7 @@ pub async fn run_round_scheduler(
 
 							trace!("Received {} inputs, {} outputs and {} offboards from user",
 								inputs.len(), outputs.len(), offboards.len());
-							all_inputs.extend(inputs);
+							all_inputs.extend(inputs.into_iter().map(|v| (v.id(), v)));
 							//TODO(stevenroose) somehow check if a tree using these outputs
 							//will exceed the config.nb_round_nonces number of nodes
 							all_outputs.extend(outputs);
@@ -236,7 +248,7 @@ pub async fn run_round_scheduler(
 			info!("Received {} inputs and {} outputs for round", all_inputs.len(), all_outputs.len());
 			// Make sure we don't allow other inputs next attempt.
 			allowed_inputs.clear();
-			allowed_inputs.extend(all_inputs.iter().map(|v| v.id()));
+			allowed_inputs.extend(all_inputs.keys().copied());
 
 			// Since it's possible in testing that we only have to do onboards,
 			// and since it's pretty annoying to deal with the case of no vtxos,
@@ -421,7 +433,7 @@ pub async fn run_round_scheduler(
 			// We need to prepare N nonces for each of N inputs.
 			let mut forfeit_pub_nonces = HashMap::with_capacity(all_inputs.len());
 			let mut forfeit_sec_nonces = HashMap::with_capacity(all_inputs.len());
-			for input in &all_inputs {
+			for id in all_inputs.keys() {
 				let mut secs = Vec::with_capacity(all_inputs.len());
 				let mut pubs = Vec::with_capacity(all_inputs.len());
 				for _ in 0..all_inputs.len() {
@@ -429,8 +441,8 @@ pub async fn run_round_scheduler(
 					secs.push(s);
 					pubs.push(p);
 				}
-				forfeit_pub_nonces.insert(input.id(), pubs);
-				forfeit_sec_nonces.insert(input.id(), secs);
+				forfeit_pub_nonces.insert(*id, pubs);
+				forfeit_sec_nonces.insert(*id, secs);
 			}
 
 			// Send out round proposal to signers.
@@ -440,6 +452,10 @@ pub async fn run_round_scheduler(
 				vtxos: signed_vtxos.clone(),
 				forfeit_nonces: forfeit_pub_nonces.clone(),
 			});
+
+			let connectors = ConnectorChain::new(
+				all_inputs.len(), conns_utxo, app.master_key.public_key(),
+			);
 
 			// Wait for signatures from users.
 			//TODO(stevenroose) we need a check to see when we have all data we need so we can skip
@@ -451,18 +467,23 @@ pub async fn run_round_scheduler(
 					_ = &mut timeout => break 'receive,
 					input = round_input_rx.recv() => match input.expect("broken channel") {
 						RoundInput::ForfeitSignatures { signatures } => {
-							//TODO(stevenroose) validate forfeit txs
-							let mut ok = true;
-							for (id, (nonces, sigs)) in &signatures {
-								if nonces.len() != all_inputs.len() || sigs.len() != all_inputs.len() {
-									warn!("User didn't provide enough forfeit sigs for {}", id);
-									ok = false;
+							for (id, nonces, sigs) in signatures {
+								if let Some(_vtxo) = all_inputs.get(&id) {
+									//TODO(stevenroose) actually validate forfeit txs
+									// probably make one method that both validates and cross-signs
+									// the forfeit txs at the same time to save memory and not
+									// double-create the musig context
+									match validate_forfeit_sigs(
+										&connectors,
+										&nonces,
+										&sigs,
+									) {
+										Ok(()) => { forfeit_part_sigs.insert(id, (nonces, sigs)); },
+										Err(e) => debug!("Invalid forfeit sigs for {}: {}", id, e),
+									}
+								} else {
+									debug!("User provided forfeit sigs for unknown input {}", id);
 								}
-							}
-							if ok {
-								//TODO(stevenroose) actually check if the forfeit sigs are
-								//for actual inputs in the round
-								forfeit_part_sigs.extend(signatures.into_iter());
 							}
 
 							// Check whether we have all and can skip the loop.
@@ -487,14 +508,10 @@ pub async fn run_round_scheduler(
 			// Finish the forfeit signatures.
 			let mut forfeit_sigs = HashMap::with_capacity(all_inputs.len());
 			let mut missing_forfeits = HashSet::new();
-			let connectors = ConnectorChain::new(
-				all_inputs.len(), conns_utxo, app.master_key.public_key(),
-			);
-			for vtxo in &all_inputs {
-				if let Some((user_nonces, partial_sigs)) = forfeit_part_sigs.get(&vtxo.id()) {
-					let vtxo = vtxo.clone();
-					let sec_nonces = forfeit_sec_nonces.remove(&vtxo.id()).unwrap().into_iter();
-					let pub_nonces = forfeit_pub_nonces.get(&vtxo.id()).unwrap();
+			for (id, vtxo) in &all_inputs {
+				if let Some((user_nonces, partial_sigs)) = forfeit_part_sigs.get(id) {
+					let sec_nonces = forfeit_sec_nonces.remove(id).unwrap().into_iter();
+					let pub_nonces = forfeit_pub_nonces.get(id).unwrap();
 					let connectors = connectors.connectors();
 					let mut sigs = Vec::with_capacity(all_inputs.len());
 					for (i, (conn, sec)) in connectors.zip(sec_nonces.into_iter()).enumerate() {
@@ -511,9 +528,9 @@ pub async fn run_round_scheduler(
 						);
 						sigs.push(sig.expect("should be signed"));
 					}
-					forfeit_sigs.insert(vtxo.id(), sigs);
+					forfeit_sigs.insert(*id, sigs);
 				} else {
-					missing_forfeits.insert(vtxo.id());
+					missing_forfeits.insert(*id);
 				}
 			}
 			//TODO(stevenroose) if missing forfeits, ban inputs and restart round
@@ -547,8 +564,8 @@ pub async fn run_round_scheduler(
 
 			// Store forfeit txs and round info in database.
 			let round_id = round_tx.txid();
-			for vtxo in all_inputs {
-				let forfeit_sigs = forfeit_sigs.remove(&vtxo.id()).unwrap();
+			for (id, vtxo) in all_inputs {
+				let forfeit_sigs = forfeit_sigs.remove(&id).unwrap();
 				let point = vtxo.point();
 				let ff = match vtxo {
 					Vtxo::Onboard { utxo, spec, .. } => {

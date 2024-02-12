@@ -116,6 +116,9 @@ impl OffboardRequest {
 pub struct VtxoId([u8; 36]);
 
 impl VtxoId {
+	/// Size in bytes of an encoded [VtxoId].
+	pub const ENCODE_SIZE: usize = 36;
+
 	pub fn from_slice(b: &[u8]) -> Result<VtxoId, &'static str> {
 		if b.len() == 36 {
 			let mut ret = [0u8; 36];
@@ -160,6 +163,28 @@ impl fmt::Display for VtxoId {
 impl fmt::Debug for VtxoId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		fmt::Display::fmt(self, f)
+	}
+}
+
+impl serde::Serialize for VtxoId {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_bytes(self.as_ref())
+	}
+}
+
+impl<'de> serde::Deserialize<'de> for VtxoId {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		struct Visitor;
+		impl<'de> serde::de::Visitor<'de> for Visitor {
+			type Value = VtxoId;
+			fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+				write!(f, "a VtxoId")
+			}
+			fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+				VtxoId::from_slice(v).map_err(serde::de::Error::custom)
+			}
+		}
+		d.deserialize_bytes(Visitor)
 	}
 }
 

@@ -319,7 +319,7 @@ impl Wallet {
 		// Prepare the payment.
 		self.sync_ark().await.context("failed to sync with ark")?;
 		let payment = VtxoRequest { pubkey: destination, amount };
-		let input_vtxos = self.db.get_all_vtxos()?;
+		let input_vtxos = self.db.get_expiring_vtxos(amount)?;
 		let change = {
 			let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 			if sum < payment.amount {

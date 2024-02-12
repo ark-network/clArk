@@ -1,8 +1,9 @@
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{bail, Context};
-
+use bitcoin::Amount;
 use sled::transaction as tx;
 
 use ark::{Vtxo, VtxoId};
@@ -12,6 +13,7 @@ use crate::exit;
 // Trees
 
 const VTXO_TREE: &str = "noah_vtxos";
+const VTXO_EXPIRY_TREE: &str = "noah_vtxo_by_expiry";
 const FORFEIT_VTXO_TREE: &str = "noah_forfeited_vtxos";
 
 // Top-level entries
@@ -44,7 +46,19 @@ impl Db {
 	}
 
 	pub fn store_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
+		//TODO(stevenroose) should be a transaction but can't do cross-tree txs
+		let expiry = vtxo.spec().expiry_height;
 		self.db.open_tree(VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?;
+		self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_be_bytes(), |vsb| {
+			let mut vs = vsb.map(|b| {
+				ciborium::from_reader::<HashSet<VtxoId>, _>(&b[..])
+					.expect("corrupt db: invalid vtxo list")
+			}).unwrap_or_default();
+			vs.insert(vtxo.id());
+			let mut buf = Vec::with_capacity(4 + vs.len() * VtxoId::ENCODE_SIZE);
+			ciborium::into_writer(&vs, &mut buf).unwrap();
+			Some(buf)
+		})?;
 		Ok(())
 	}
 
@@ -57,12 +71,52 @@ impl Db {
 	pub fn get_all_vtxos(&self) -> anyhow::Result<Vec<Vtxo>> {
 		self.db.open_tree(VTXO_TREE)?.iter().map(|v| {
 			let (_key, val) = v?;
-			Ok(Vtxo::decode(&val)?)
+			Ok(Vtxo::decode(&val).expect("corrupt db: invalid vtxo"))
 		}).collect()
 	}
 
+	/// Get the soonest-expiring vtxos with total value at least [min_value].
+	pub fn get_expiring_vtxos(&self, min_value: Amount) -> anyhow::Result<Vec<Vtxo>> {
+		let mut ret = Vec::new();
+		let mut total_amount = Amount::ZERO;
+		for res in self.db.open_tree(VTXO_EXPIRY_TREE)?.iter().values() {
+			let vsb = res?;
+			let vs = ciborium::from_reader::<HashSet<VtxoId>, _>(&vsb[..])
+				.expect("corrupt db: invalid vtxo list");
+			for id in vs {
+				let vtxo = self.get_vtxo(id)?.expect("corrupt db: missing vtxo from expiry");
+				total_amount += vtxo.spec().amount;
+				ret.push(vtxo);
+				if total_amount >= min_value {
+					return Ok(ret);
+				}
+			}
+		}
+		bail!("Not enough money, total balance: {}", total_amount);
+	}
+
 	pub fn remove_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<Vtxo>> {
-		Ok(self.db.open_tree(VTXO_TREE)?.remove(&id)?.map(|b| Vtxo::decode(&b)).transpose()?)
+		//TODO(stevenroose) should be a transaction but can't do cross-tree txs
+		if let Some(v) = self.db.open_tree(VTXO_TREE)?.remove(&id)? {
+			let ret = Vtxo::decode(&v).expect("corrupt db: invalid vtxo");
+			let expiry = ret.spec().expiry_height;
+			self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_be_bytes(), |vsb| {
+				let vsb = vsb.expect("corrupt db: expiry entry missing");
+				let mut vs = ciborium::from_reader::<HashSet<VtxoId>, _>(&vsb[..])
+					.expect("corrupt db: invalid vtxo list");
+				vs.remove(&id);
+				if !vs.is_empty() {
+					let mut buf = Vec::with_capacity(4 + vs.len() * VtxoId::ENCODE_SIZE);
+					ciborium::into_writer(&vs, &mut buf).unwrap();
+					Some(buf)
+				} else {
+					None
+				}
+			})?;
+			Ok(Some(ret))
+		} else {
+			Ok(None)
+		}
 	}
 
 	/// This overrides the existing list of exit claim inputs with the new list.
@@ -76,7 +130,8 @@ impl Db {
 	/// Gets the current list of exit claim inputs.
 	pub fn get_claim_inputs(&self) -> anyhow::Result<Vec<exit::ClaimInput>> {
 		match self.db.get(CLAIM_INPUTS)? {
-			Some(buf) => Ok(ciborium::from_reader(&buf[..]).expect("corrupt db")),
+			Some(buf) => Ok(ciborium::from_reader(&buf[..])
+				.expect("corrupt db: claim inputs")),
 			None => Ok(Vec::new()),
 		}
 	}

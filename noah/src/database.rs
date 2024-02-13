@@ -7,6 +7,7 @@ use bitcoin::Amount;
 use sled::transaction as tx;
 
 use ark::{Vtxo, VtxoId};
+use sled_utils::BucketTree;
 
 use crate::exit;
 
@@ -47,18 +48,9 @@ impl Db {
 
 	pub fn store_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
 		//TODO(stevenroose) should be a transaction but can't do cross-tree txs
-		let expiry = vtxo.spec().expiry_height;
 		self.db.open_tree(VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?;
-		self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_le_bytes(), |vsb| {
-			let mut vs = vsb.map(|b| {
-				ciborium::from_reader::<HashSet<VtxoId>, _>(&b[..])
-					.expect("corrupt db: invalid vtxo list")
-			}).unwrap_or_default();
-			vs.insert(vtxo.id());
-			let mut buf = Vec::with_capacity(4 + vs.len() * VtxoId::ENCODE_SIZE);
-			ciborium::into_writer(&vs, &mut buf).unwrap();
-			Some(buf)
-		})?;
+		BucketTree::new(self.db.open_tree(VTXO_EXPIRY_TREE)?)
+			.insert(vtxo.spec().expiry_height.to_le_bytes(), &vtxo.id())?;
 		Ok(())
 	}
 
@@ -99,20 +91,8 @@ impl Db {
 		//TODO(stevenroose) should be a transaction but can't do cross-tree txs
 		if let Some(v) = self.db.open_tree(VTXO_TREE)?.remove(&id)? {
 			let ret = Vtxo::decode(&v).expect("corrupt db: invalid vtxo");
-			let expiry = ret.spec().expiry_height;
-			self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_le_bytes(), |vsb| {
-				let vsb = vsb.expect("corrupt db: expiry entry missing");
-				let mut vs = ciborium::from_reader::<HashSet<VtxoId>, _>(&vsb[..])
-					.expect("corrupt db: invalid vtxo list");
-				vs.remove(&id);
-				if !vs.is_empty() {
-					let mut buf = Vec::with_capacity(4 + vs.len() * VtxoId::ENCODE_SIZE);
-					ciborium::into_writer(&vs, &mut buf).unwrap();
-					Some(buf)
-				} else {
-					None
-				}
-			})?;
+			BucketTree::new(self.db.open_tree(VTXO_EXPIRY_TREE)?)
+				.remove(ret.spec().expiry_height.to_le_bytes(), &id)?;
 			Ok(Some(ret))
 		} else {
 			Ok(None)

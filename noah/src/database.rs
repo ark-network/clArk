@@ -49,7 +49,7 @@ impl Db {
 		//TODO(stevenroose) should be a transaction but can't do cross-tree txs
 		let expiry = vtxo.spec().expiry_height;
 		self.db.open_tree(VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?;
-		self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_be_bytes(), |vsb| {
+		self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_le_bytes(), |vsb| {
 			let mut vs = vsb.map(|b| {
 				ciborium::from_reader::<HashSet<VtxoId>, _>(&b[..])
 					.expect("corrupt db: invalid vtxo list")
@@ -100,7 +100,7 @@ impl Db {
 		if let Some(v) = self.db.open_tree(VTXO_TREE)?.remove(&id)? {
 			let ret = Vtxo::decode(&v).expect("corrupt db: invalid vtxo");
 			let expiry = ret.spec().expiry_height;
-			self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_be_bytes(), |vsb| {
+			self.db.open_tree(VTXO_EXPIRY_TREE)?.fetch_and_update(expiry.to_le_bytes(), |vsb| {
 				let vsb = vsb.expect("corrupt db: expiry entry missing");
 				let mut vs = ciborium::from_reader::<HashSet<VtxoId>, _>(&vsb[..])
 					.expect("corrupt db: invalid vtxo list");
@@ -146,12 +146,12 @@ impl Db {
 	}
 
 	pub fn store_last_ark_sync_height(&self, height: u32) -> anyhow::Result<()> {
-		self.db.insert(LAST_ARK_SYNC_HEIGHT, height.to_be_bytes().to_vec())?;
+		self.db.insert(LAST_ARK_SYNC_HEIGHT, height.to_le_bytes().to_vec())?;
 		Ok(())
 	}
 
 	pub fn store_forfeited_vtxo(&self, id: VtxoId, height: u32) -> anyhow::Result<()> {
-		self.db.open_tree(FORFEIT_VTXO_TREE)?.insert(id, height.to_be_bytes().to_vec())?;
+		self.db.open_tree(FORFEIT_VTXO_TREE)?.insert(id, height.to_le_bytes().to_vec())?;
 		Ok(())
 	}
 

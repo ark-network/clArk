@@ -1,0 +1,10 @@
+[package]
+name = "sled-utils"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+sled.workspace = true
+serde.workspace = true
+ciborium.workspace = true

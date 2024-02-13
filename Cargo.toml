@@ -5,6 +5,8 @@ members = [
   "arkd-rpc-client",
   "arkd",
   "noah",
+
+  "sled-utils",
 ]
 
 # TODO(stevenroose) at some point probably move these inline
@@ -32,6 +34,8 @@ bdk_electrum = { git = "https://github.com/stevenroose/bdk.git", rev = "67602f5b
 bdk_file_store = { git = "https://github.com/stevenroose/bdk.git", rev = "67602f5b33ea82775d94a28df9f3f66d2ca9aa19" }
 bdk_bitcoind_rpc = { git = "https://github.com/stevenroose/bdk.git", rev = "67602f5b33ea82775d94a28df9f3f66d2ca9aa19" }
 electrum-client = "0.19.0"
+
+sled = "0.34.7"
 
 
 # async + gRPC stack

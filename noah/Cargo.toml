@@ -14,6 +14,7 @@ path = "src/bin/noah/main.rs"
 [dependencies]
 ark-lib = { path = "../ark-lib" }
 arkd-rpc-client = { path = "../arkd-rpc-client" }
+sled-utils = { path = "../sled-utils" }
 
 anyhow.workspace = true
 lazy_static.workspace = true
@@ -33,5 +34,5 @@ prost.workspace = true
 tonic.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+sled.workspace = true
 
-sled = "0.34.7"

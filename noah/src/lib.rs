@@ -6,7 +6,7 @@
 mod database;
 mod exit;
 mod onchain;
-mod psbt;
+mod psbtext;
 
 
 use std::{env, fs, iter};
@@ -116,7 +116,7 @@ impl Wallet {
 			.await.context("failed to connect to asp")?;
 
 		let ark_info = {
-			let res = asp.get_ark_info(arkd_rpc_client::Empty{})
+			let res = asp.get_ark_info(rpc::Empty{})
 				.await.context("ark info request failed")?.into_inner();
 			ArkInfo {
 				asp_pubkey: PublicKey::from_slice(&res.pubkey).context("asp pubkey")?,

@@ -9,12 +9,14 @@ use sled::transaction as tx;
 
 use ark::{VtxoId, VtxoSpec};
 use ark::tree::signed::SignedVtxoTree;
+use sled_utils::BucketTree;
 
 
 // TREE KEYS
 
 const FORFEIT_VTXO_TREE: &str = "forfeited_vtxos";
 const ROUND_TREE: &str = "rounds";
+const ROUND_EXPIRY_TREE: &str = "rounds_by_expiry";
 
 
 // ENTRY KEYS
@@ -127,6 +129,7 @@ impl Db {
 	}
 
 	pub fn store_round(&self, round_tx: Transaction, vtxos: SignedVtxoTree) -> anyhow::Result<()> {
+		let expiry = vtxos.spec.expiry_height;
 		let round = StoredRound {
 			tx: round_tx,
 			signed_tree: vtxos,
@@ -134,6 +137,8 @@ impl Db {
 		if self.db.open_tree(ROUND_TREE)?.insert(round.id(), round.encode())?.is_some() {
 			warn!("Round with id {} already present!", round.id());
 		}
+		BucketTree::new(self.db.open_tree(ROUND_EXPIRY_TREE)?)
+			.insert(expiry.to_le_bytes(), &round.id())?;
 
 		let mut fresh = self.get_fresh_round_ids()?;
 		fresh.push(round.id());
@@ -148,6 +153,23 @@ impl Db {
 		Ok(self.db.open_tree(ROUND_TREE)?.get(id)?.map(|b| {
 			StoredRound::decode(&b).expect("corrupt db")
 		}))
+	}
+
+	/// Get all round IDs of rounds that expired before or on [height].
+	pub fn get_expired_rounds(&self, height: u32) -> anyhow::Result<Vec<Txid>> {
+		let mut ret = Vec::new();
+		for res in BucketTree::<Txid>::new(self.db.open_tree(ROUND_EXPIRY_TREE)?).iter() {
+			let (keybuf, set) = res?;
+			let mut buf = [0u8; 4];
+			buf[..].copy_from_slice(&keybuf[..]);
+			let expiry = u32::from_le_bytes(buf);
+			if expiry > height {
+				break;
+			}
+			ret.extend(set);
+		}
+
+		Ok(ret)
 	}
 
 	pub fn get_fresh_round_ids(&self) -> anyhow::Result<Vec<Txid>> {

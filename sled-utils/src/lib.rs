@@ -58,7 +58,11 @@ impl<T: serde::de::DeserializeOwned + serde::Serialize + Eq + Hash + Clone> Buck
 
 			// naively extrapolate the set's size
 			let old_len = setbuf.map(|b| b.len()).unwrap_or_default();
-			let item_len = old_len / (set.len() - 1);
+			let item_len = if set.len() == 1 {
+				0 // can't know
+			} else {
+				old_len / (set.len() - 1)
+			};
 			let mut buf = Vec::with_capacity(old_len + item_len);
 			ciborium::into_writer(&set, &mut buf).expect("bufs don't error");
 			Some(buf)

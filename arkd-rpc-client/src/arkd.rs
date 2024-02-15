@@ -182,6 +182,14 @@ pub struct VtxoSignaturesRequest {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WalletStatusResponse {
+    #[prost(string, tag = "1")]
+    pub address: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub balance: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Empty {}
 /// Generated client implementations.
 pub mod ark_service_client {
@@ -536,6 +544,31 @@ pub mod admin_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        pub async fn wallet_status(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<
+            tonic::Response<super::WalletStatusResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.AdminService/WalletStatus",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.AdminService", "WalletStatus"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn stop(
             &mut self,
             request: impl tonic::IntoRequest<super::Empty>,
@@ -550,9 +583,9 @@ pub mod admin_service_client {
                     )
                 })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/arkd.AdminService/stop");
+            let path = http::uri::PathAndQuery::from_static("/arkd.AdminService/Stop");
             let mut req = request.into_request();
-            req.extensions_mut().insert(GrpcMethod::new("arkd.AdminService", "stop"));
+            req.extensions_mut().insert(GrpcMethod::new("arkd.AdminService", "Stop"));
             self.inner.unary(req, path, codec).await
         }
     }

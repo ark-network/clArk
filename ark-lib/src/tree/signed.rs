@@ -7,7 +7,7 @@ use bitcoin::{
 };
 use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
-use bitcoin::taproot::TaprootBuilder;
+use bitcoin::taproot::{ControlBlock, LeafVersion, TapNodeHash, TaprootBuilder};
 
 use crate::{fee, musig, util, VtxoRequest};
 use crate::tree::Tree;
@@ -21,6 +21,9 @@ const NODE2_TX_VSIZE: u64 = 154;
 const NODE3_TX_VSIZE: u64 = 197;
 /// Size in vbytes for a node tx with radix 4.
 const NODE4_TX_VSIZE: u64 = 240;
+
+//TODO(stevenroose) write a test for this
+pub const NODE_SPEND_WEIGHT: usize = 140;
 
 
 #[derive(Debug, Clone, Eq, PartialEq, Deserialize, Serialize)]
@@ -104,6 +107,15 @@ impl VtxoTreeSpec {
 	fn expiry_clause(&self) -> ScriptBuf {
 		let pk = self.asp_key.x_only_public_key().0;
 		util::timelock_sign(self.expiry_height.try_into().unwrap(), pk)
+	}
+
+	/// The taproot scriptspend info for the expiry clause.
+	pub fn expiry_scriptspend(&self) -> (ControlBlock, ScriptBuf, LeafVersion, TapNodeHash) {
+		let taproot = self.cosign_taproot();
+		let script = self.expiry_clause();
+		let cb = taproot.control_block(&(script.clone(), LeafVersion::TapScript))
+			.expect("expiry script should be in cosign taproot");
+		(cb, script, LeafVersion::TapScript, taproot.merkle_root().unwrap())
 	}
 
 	pub fn cosign_taproot(&self) -> taproot::TaprootSpendInfo {

@@ -130,6 +130,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ark-lib",
+ "arkd-rpc-client",
  "bdk",
  "bdk_bitcoind_rpc",
  "bdk_electrum",
@@ -137,6 +138,7 @@ dependencies = [
  "bip39",
  "bitcoin 0.30.0",
  "ciborium",
+ "clap",
  "electrum-client 0.19.0",
  "env_logger",
  "lazy_static",
@@ -144,6 +146,7 @@ dependencies = [
  "prost",
  "serde",
  "sled",
+ "sled-utils",
  "tokio",
  "tokio-stream",
  "tonic",

@@ -128,7 +128,13 @@ message VtxoSignaturesRequest {
 
 /// Administration service for arkd.
 service AdminService {
-	rpc stop(Empty) returns (Empty) {}
+	rpc WalletStatus(Empty) returns (WalletStatusResponse) {}
+	rpc Stop(Empty) returns (Empty) {}
+}
+
+message WalletStatusResponse {
+	string address = 1;
+	uint64 balance = 2;
 }
 
 message Empty {}

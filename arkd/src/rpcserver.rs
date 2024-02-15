@@ -50,7 +50,7 @@ impl rpc::ArkService for Arc<App> {
 	) -> Result<tonic::Response<rpc::ArkInfo>, tonic::Status> {
 		let ret = rpc::ArkInfo {
 			pubkey: self.master_key.public_key().serialize().to_vec(),
-			xonly_pubkey: self.master_key.public_key().x_only_public_key().0.serialize().to_vec(),
+			xonly_pubkey: self.master_key.x_only_public_key().0.serialize().to_vec(),
 			nb_round_nonces: self.config.nb_round_nonces as u32,
 			vtxo_exit_delta: self.config.vtxo_exit_delta as u32,
 			vtxo_expiry_delta: self.config.vtxo_expiry_delta as u32,
@@ -261,13 +261,37 @@ impl rpc::ArkService for Arc<App> {
 	}
 }
 
+#[tonic::async_trait]
+impl rpc::AdminService for Arc<App> {
+	async fn wallet_status(
+		&self,
+		_req: tonic::Request<rpc::Empty>,
+	) -> Result<tonic::Response<rpc::WalletStatusResponse>, tonic::Status> {
+		Ok(tonic::Response::new(rpc::WalletStatusResponse {
+			address: self.onchain_address().await.to_status()?.to_string(),
+			balance: self.sync_onchain_wallet().await.to_status()?.to_sat(),
+		}))
+	}
+
+	async fn stop(
+		&self,
+		_req: tonic::Request<rpc::Empty>,
+	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
+		//TODO(stevenroose) implement graceful shutdown
+		std::process::exit(0);
+	}
+}
+
 /// Run the public gRPC endpoint.
 pub async fn run_public_rpc_server(app: Arc<App>) -> anyhow::Result<()> {
 	let addr = app.config.public_rpc_address;
 	info!("Starting gRPC service on address {}", addr);
-	let server = rpc::ArkServiceServer::new(app);
+	let ark_server = rpc::ArkServiceServer::new(app.clone());
+	let admin_server = rpc::AdminServiceServer::new(app.clone());
 	tonic::transport::Server::builder()
-		.add_service(server)
+		.add_service(ark_server)
+		//TODO(stevenroose) serve on different port or so
+		.add_service(admin_server)
 		.serve(addr)
 		.await?;
 	Ok(())

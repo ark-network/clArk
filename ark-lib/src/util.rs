@@ -1,11 +1,25 @@
 
-use bitcoin::{opcodes, ScriptBuf};
-use bitcoin::secp256k1::{self, XOnlyPublicKey};
+use std::borrow::Borrow;
+
+use bitcoin::{opcodes, taproot, ScriptBuf};
+use bitcoin::secp256k1::{self, KeyPair, XOnlyPublicKey};
 
 lazy_static::lazy_static! {
 	/// Global secp context.
 	pub static ref SECP: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::new();
 }
+
+pub trait KeyPairExt: Borrow<KeyPair> {
+	/// Adapt this key pair to be used in a key-spend-only taproot.
+	fn for_keyspend(&self) -> KeyPair {
+		let tweak = taproot::TapTweakHash::from_key_and_tweak(
+			self.borrow().x_only_public_key().0, None,
+		).to_scalar();
+		self.borrow().clone().add_xonly_tweak(&SECP, &tweak).expect("hashed values")
+	}
+}
+
+impl KeyPairExt for KeyPair {}
 
 /// Create a tapscript that is a checksig and a relative timelock.
 pub fn delayed_sign(delay_blocks: u16, pubkey: XOnlyPublicKey) -> ScriptBuf {

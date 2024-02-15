@@ -6,6 +6,7 @@
 
 
 mod database;
+mod psbtext;
 mod rpc;
 mod rpcserver;
 mod round;
@@ -19,12 +20,14 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Context;
-use bitcoin::{Amount, Address};
-use bitcoin::bip32;
+use bitcoin::{bip32, sighash, psbt, taproot, Amount, Address, OutPoint, Witness};
 use bitcoin::secp256k1::{self, KeyPair};
 use tokio::sync::Mutex;
 
-use round::{RoundEvent, RoundInput};
+use ark::util::KeyPairExt;
+
+use crate::psbtext::{PsbtInputExt, RoundMeta};
+use crate::round::{RoundEvent, RoundInput};
 
 const DB_MAGIC: &str = "bdk_wallet";
 
@@ -67,6 +70,7 @@ impl Default for Config {
 pub struct App {
 	config: Config,
 	db: database::Db,
+	master_xpriv: bip32::ExtendedPrivKey,
 	master_key: KeyPair,
 	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
@@ -126,6 +130,7 @@ impl App {
 		let ret = Arc::new(App {
 			config: config,
 			db: db,
+			master_xpriv: xpriv,
 			master_key: master_key,
 			wallet: Mutex::new(wallet),
 			bitcoind: bitcoind,
@@ -149,7 +154,7 @@ impl App {
 		Ok((ret, jh))
 	}
 
-	pub async fn onchain_address(self: &Arc<Self>) -> anyhow::Result<Address> {
+	pub async fn onchain_address(&self) -> anyhow::Result<Address> {
 		let mut wallet = self.wallet.lock().await;
 		let ret = wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address;
 		// should always return the same address
@@ -157,7 +162,7 @@ impl App {
 		Ok(ret)
 	}
 
-	pub async fn sync_onchain_wallet(self: &Arc<Self>) -> anyhow::Result<Amount> {
+	pub async fn sync_onchain_wallet(&self) -> anyhow::Result<Amount> {
 		let mut wallet = self.wallet.lock().await;
 		let prev_tip = wallet.latest_checkpoint();
 		// let keychain_spks = self.wallet.spks_of_all_keychains();
@@ -195,8 +200,119 @@ impl App {
 		Ok(Amount::from_sat(balance.total()))
 	}
 
-	pub fn cosign_onboard(self: &Arc<Self>, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {
+	pub fn cosign_onboard(&self, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {
 		info!("Cosigning onboard request for utxo {}", user_part.utxo);
 		ark::onboard::new_asp(&user_part, &self.master_key)
+	}
+
+	/// Returns a set of UTXOs from previous rounds that can be spent.
+	///
+	/// It fills in the PSBT inputs with the fields required to sign,
+	/// for signing use [sign_round_utxo_inputs].
+	fn spendable_expired_vtxos(&self, height: u32) -> anyhow::Result<Vec<SpendableUtxo>> {
+		let pubkey = self.master_key.public_key();
+
+		let expired_rounds = self.db.get_expired_rounds(height)?;
+		let mut ret = Vec::with_capacity(2 * expired_rounds.len());
+		for round_txid in expired_rounds {
+			let round = self.db.get_round(round_txid)?.expect("db has round");
+
+			// First add the vtxo tree utxo.
+			let (
+				spend_cb, spend_script, spend_lv, spend_merkle,
+			) = round.signed_tree.spec.expiry_scriptspend();
+			let mut psbt_in = psbt::Input {
+				witness_utxo: Some(round.tx.output[0].clone()),
+				sighash_type: Some(sighash::TapSighashType::Default.into()),
+				tap_internal_key: Some(round.signed_tree.spec.cosign_agg_pk),
+				tap_scripts: [(spend_cb, (spend_script, spend_lv))].into_iter().collect(),
+				tap_merkle_root: Some(spend_merkle),
+				non_witness_utxo: Some(round.tx.clone()),
+				..Default::default()
+			};
+			psbt_in.set_round_meta(round_txid, RoundMeta::Vtxo);
+			ret.push(SpendableUtxo {
+				point: OutPoint::new(round_txid, 0),
+				psbt: psbt_in,
+				weight: ark::tree::signed::NODE_SPEND_WEIGHT,
+			});
+
+			// Then add the connector output.
+			// NB this is safe because we will use SIGHASH_ALL.
+			let mut psbt_in = psbt::Input {
+				witness_utxo: Some(round.tx.output[1].clone()),
+				sighash_type: Some(sighash::TapSighashType::Default.into()),
+				tap_internal_key: Some(pubkey.x_only_public_key().0),
+				non_witness_utxo: Some(round.tx.clone()),
+				..Default::default()
+			};
+			psbt_in.set_round_meta(round_txid, RoundMeta::Connector);
+			ret.push(SpendableUtxo {
+				point: OutPoint::new(round_txid, 1),
+				psbt: psbt_in,
+				weight: ark::connectors::INPUT_WEIGHT,
+			});
+		}
+
+		Ok(ret)
+	}
+
+	fn sign_round_utxo_inputs(&self, psbt: &mut psbt::Psbt) -> anyhow::Result<()> {
+		let mut shc = sighash::SighashCache::new(&psbt.unsigned_tx);
+		let prevouts = psbt.inputs.iter()
+			.map(|i| i.witness_utxo.clone().unwrap())
+			.collect::<Vec<_>>();
+
+		let connector_keypair = self.master_key.for_keyspend();
+		for (idx, input) in psbt.inputs.iter_mut().enumerate() {
+			if let Some((_round, meta)) = input.get_round_meta().context("corrupt psbt")? {
+				match meta {
+					RoundMeta::Vtxo => {
+						let (control, (script, lv)) = input.tap_scripts.iter().next()
+							.context("corrupt psbt: missing tap_scripts")?;
+						let leaf_hash = taproot::TapLeafHash::from_script(script, *lv);
+						let sighash = shc.taproot_script_spend_signature_hash(
+							idx,
+							&sighash::Prevouts::All(&prevouts),
+							leaf_hash,
+							sighash::TapSighashType::Default,
+						).expect("all prevouts provided");
+						trace!("Signing expired VTXO input for sighash {}", sighash);
+						let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
+						let sig = SECP.sign_schnorr(&msg, &self.master_key);
+						let wit = Witness::from_slice(
+							&[&sig[..], script.as_bytes(), &control.serialize()],
+						);
+						debug_assert_eq!(wit.serialized_len(), ark::tree::signed::NODE_SPEND_WEIGHT);
+						input.final_script_witness = Some(wit);
+					},
+					RoundMeta::Connector => {
+						let sighash = shc.taproot_key_spend_signature_hash(
+							idx,
+							&sighash::Prevouts::All(&prevouts),
+							sighash::TapSighashType::Default,
+						).expect("all prevouts provided");
+						trace!("Signing expired connector input for sighash {}", sighash);
+						let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
+						let sig = SECP.sign_schnorr(&msg, &connector_keypair);
+						input.final_script_witness = Some(Witness::from_slice(&[sig[..].to_vec()]));
+					},
+				}
+			}
+		}
+
+		Ok(())
+	}
+}
+
+pub(crate) struct SpendableUtxo {
+	pub point: OutPoint,
+	pub psbt: psbt::Input,
+	pub weight: usize,
+}
+
+impl SpendableUtxo {
+	pub fn amount(&self) -> Amount {
+		Amount::from_sat(self.psbt.witness_utxo.as_ref().unwrap().value)
 	}
 }

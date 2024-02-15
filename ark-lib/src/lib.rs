@@ -7,7 +7,7 @@ pub mod forfeit;
 pub mod musig;
 pub mod onboard;
 pub mod tree;
-mod util;
+pub mod util;
 #[cfg(test)]
 mod napkin;
 

@@ -8,11 +8,14 @@ tonic-build = "0.10"
 
 [dependencies]
 ark-lib = { path = "../ark-lib" }
+arkd-rpc-client = { path = "../arkd-rpc-client" }
+sled-utils = { path = "../sled-utils" }
 
 anyhow.workspace = true
 lazy_static.workspace = true
 log.workspace = true
 env_logger.workspace = true
+clap.workspace = true
 serde.workspace = true
 ciborium.workspace = true
 bitcoin.workspace = true
@@ -27,4 +30,4 @@ tonic.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 
-sled = "0.34.7"
+sled.workspace = true

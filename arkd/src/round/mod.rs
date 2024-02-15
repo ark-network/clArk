@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use bitcoin::{Amount, FeeRate, OutPoint, Transaction};
+use bitcoin::{Amount, FeeRate, OutPoint, Sequence, Transaction};
 use bitcoin::hashes::Hash;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::secp256k1::{rand, KeyPair, PublicKey};
 use bitcoin::sighash::TapSighash;
 
@@ -151,6 +152,8 @@ pub async fn run_round_scheduler(
 ) -> anyhow::Result<()> {
 	let cfg = &app.config;
 
+	info!("Onchain balance: {}", app.sync_onchain_wallet().await?);
+
 	//TODO(stevenroose) somehow get these from a fee estimator service
 	let offboard_feerate = FeeRate::from_sat_per_vb(10).unwrap();
 	let round_tx_feerate = FeeRate::from_sat_per_vb(10).unwrap();
@@ -173,6 +176,8 @@ pub async fn run_round_scheduler(
 		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id, offboard_feerate });
 
 		// Allocate this data once per round so that we can keep them 
+		// Perhaps we could even keep allocations between all rounds, but time
+		// in between attempts is way more critial than in between rounds.
 		let mut all_inputs = HashMap::<VtxoId, Vtxo>::new();
 		let mut all_outputs = Vec::<VtxoRequest>::new();
 		let mut all_offboards = Vec::<OffboardRequest>::new();
@@ -276,8 +281,8 @@ pub async fn run_round_scheduler(
 			// *   meaning from the root tx down to the leaves.
 			// ****************************************************************
 
-			let tip = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&app.bitcoind)?;
-			let expiry = tip as u32 + cfg.vtxo_expiry_delta as u32;
+			let tip = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&app.bitcoind)? as u32;
+			let expiry = tip+ cfg.vtxo_expiry_delta as u32;
 			debug!("Current tip is {}, so round vtxos will expire at {}", tip, expiry);
 
 			let cosign_agg_pk = musig::combine_keys(cosigners.iter().copied());
@@ -297,18 +302,33 @@ pub async fn run_round_scheduler(
 			);
 
 			// Build round tx.
+			let spendable_utxos = app.spendable_expired_vtxos(tip)?;
+			if !spendable_utxos.is_empty() {
+				debug!("Will be spending {} round-related UTXOs with total value of {}",
+					spendable_utxos.len(), spendable_utxos.iter().map(|v| v.amount()).sum::<Amount>(),
+				);
+				for u in &spendable_utxos {
+					trace!("Including round-related UTXO {} with value {}", u.point, u.amount());
+				}
+			}
 			//TODO(stevenroose) think about if we can release lock sooner
 			let mut wallet = app.wallet.lock().await;
 			let mut round_tx_psbt = {
 				let mut b = wallet.build_tx();
 				b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
+				b.nlocktime(LockTime::from_height(tip).expect("actual height"));
+				for utxo in &spendable_utxos {
+					b.add_foreign_utxo_with_sequence(
+						utxo.point, utxo.psbt.clone(), utxo.weight, Sequence::ZERO,
+					).expect("bdk rejected foreign utxo");
+				}
 				b.add_recipient(vtxos_spec.cosign_spk(), vtxos_spec.total_required_value().to_sat());
 				b.add_recipient(connector_output.script_pubkey, connector_output.value);
 				for offb in &all_offboards {
 					b.add_recipient(offb.script_pubkey.clone(), offb.amount.to_sat());
 				}
 				b.fee_rate(round_tx_feerate.to_bdk());
-				b.finish().context("bdk failed to create round tx")?
+				b.finish().expect("bdk failed to create round tx")
 			};
 			let round_tx = round_tx_psbt.clone().extract_tx();
 			let vtxos_utxo = OutPoint::new(round_tx.txid(), 0);
@@ -541,6 +561,7 @@ pub async fn run_round_scheduler(
 			// ****************************************************************
 
 			// Sign the on-chain tx.
+			app.sign_round_utxo_inputs(&mut round_tx_psbt).context("signing round inputs")?;
 			let finalized = wallet.sign(&mut round_tx_psbt, bdk::SignOptions::default())?;
 			assert!(finalized);
 			let round_tx = round_tx_psbt.extract_tx();

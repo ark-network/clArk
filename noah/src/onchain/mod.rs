@@ -1,5 +1,6 @@
 
 
+use std::iter;
 use std::path::Path;
 
 use anyhow::Context;
@@ -12,7 +13,7 @@ use bitcoin::{
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 
 use crate::exit;
-use crate::psbt::PsbtInputExt;
+use crate::psbtext::PsbtInputExt;
 
 const DB_MAGIC: &str = "onchain_bdk";
 
@@ -162,7 +163,8 @@ impl Wallet {
 					version: 2,
 					lock_time: bitcoin::absolute::LockTime::ZERO,
 					input: vec![],
-					output: vec![ark::fee::dust_anchor(); utxo.vout as usize + 1],
+					output: iter::repeat(TxOut::default()).take(utxo.vout as usize)
+						.chain([ark::fee::dust_anchor()]).collect(),
 				}),
 				..Default::default()
 			};

@@ -8,7 +8,7 @@ use bitcoin::{secp256k1, sighash, taproot, Amount, OutPoint, Witness};
 use ark::{Vtxo, VtxoSpec};
 
 use crate::{SECP, Wallet};
-use crate::psbt::PsbtInputExt;
+use crate::psbtext::PsbtInputExt;
 
 
 
@@ -211,10 +211,9 @@ impl Wallet {
 				.control_block(&(exit_script.clone(), lver))
 				.expect("script is in taproot");
 
-			let mut wit = Witness::new();
-			wit.push(&sig[..]);
-			wit.push(exit_script.as_bytes());
-			wit.push(cb.serialize());
+			let wit = Witness::from_slice(
+				&[&sig[..], exit_script.as_bytes(), &cb.serialize()],
+			);
 			debug_assert_eq!(wit.serialized_len(), claim.satisfaction_weight());
 			input.final_script_witness = Some(wit);
 		}

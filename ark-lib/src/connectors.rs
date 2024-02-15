@@ -3,18 +3,20 @@
 use std::iter;
 
 use bitcoin::{
-	Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn,
-	TxOut, Witness,
+	Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+	Witness,
 };
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{self, KeyPair, PublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighashType};
 
 use crate::{fee, util};
+use crate::util::KeyPairExt;
 
 
 /// The size in vbytes of each connector tx.
 const TX_SIZE: u64 = 154;
+pub const INPUT_WEIGHT: usize = 66;
 
 
 /// A chain of connector outputs.
@@ -88,7 +90,7 @@ impl ConnectorChain {
 		ConnectorTxIter {
 			len: self.len,
 			spk: &self.spk,
-			sign_key: Some(sign_key),
+			sign_key: Some(sign_key.for_keyspend()),
 			prev: self.utxo,
 			idx: 0,
 		}
@@ -117,7 +119,7 @@ impl ConnectorChain {
 pub struct ConnectorTxIter<'a> {
 	len: usize,
 	spk: &'a Script,
-	sign_key: Option<&'a KeyPair>,
+	sign_key: Option<KeyPair>,
 
 	prev: OutPoint,
 	idx: usize,
@@ -158,16 +160,12 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 				value: ConnectorChain::required_budget(self.len - self.idx).to_sat(),
 			};
 			let mut shc = SighashCache::new(&ret);
-			let sighash = shc.taproot_signature_hash(
-				0,
-				&sighash::Prevouts::All(&[&prevout]),
-				None,
-				None,
-				TapSighashType::Default,
+			let sighash = shc.taproot_key_spend_signature_hash(
+				0, &sighash::Prevouts::All(&[&prevout]), TapSighashType::Default,
 			).expect("sighash error");
 			// TODO(stevenroose) use from_digest here after secp version update
 			let msg = secp256k1::Message::from_slice(&sighash.to_byte_array()).unwrap();
-			let sig = util::SECP.sign_schnorr(&msg, keypair);
+			let sig = util::SECP.sign_schnorr(&msg, &keypair);
 			ret.input[0].witness = Witness::from_slice(&[sig[..].to_vec()]);
 		}
 
@@ -240,7 +238,10 @@ mod test {
 		assert_eq!(chain.connectors().count(), 100);
 		assert_eq!(chain.iter_unsigned_txs().count(), 99);
 		assert_eq!(chain.iter_signed_txs(&key).count(), 99);
-		chain.iter_signed_txs(&key).for_each(|t| assert_eq!(t.vsize() as u64, TX_SIZE));
+		for tx in chain.iter_signed_txs(&key) {
+			assert_eq!(tx.vsize() as u64, TX_SIZE);
+			assert_eq!(tx.input[0].witness.serialized_len(), INPUT_WEIGHT);
+		}
 		let size = chain.iter_signed_txs(&key).map(|t| t.vsize() as u64).sum::<u64>();
 		assert_eq!(size, ConnectorChain::total_vsize(100));
 		chain.iter_unsigned_txs().for_each(|t| assert_eq!(t.output[1].value, fee::DUST.to_sat()));

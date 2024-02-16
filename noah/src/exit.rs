@@ -3,7 +3,7 @@ use std::io;
 use std::collections::HashSet;
 
 use anyhow::Context;
-use bitcoin::{secp256k1, sighash, taproot, Amount, OutPoint, Witness};
+use bitcoin::{sighash, taproot, Amount, OutPoint, Witness};
 
 use ark::{Vtxo, VtxoSpec};
 
@@ -204,8 +204,7 @@ impl Wallet {
 			trace!("sighash: {}", sighash);
 
 			assert_eq!(vtxo_key.public_key(), claim.spec.user_pubkey);
-			let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
-			let sig = SECP.sign_schnorr(&msg, &vtxo_key);
+			let sig = SECP.sign_schnorr(&sighash.into(), &vtxo_key);
 
 			let cb = claim.spec.exit_taproot()
 				.control_block(&(exit_script.clone(), lver))

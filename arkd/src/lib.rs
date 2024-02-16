@@ -278,8 +278,7 @@ impl App {
 							sighash::TapSighashType::Default,
 						).expect("all prevouts provided");
 						trace!("Signing expired VTXO input for sighash {}", sighash);
-						let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
-						let sig = SECP.sign_schnorr(&msg, &self.master_key);
+						let sig = SECP.sign_schnorr(&sighash.into(), &self.master_key);
 						let wit = Witness::from_slice(
 							&[&sig[..], script.as_bytes(), &control.serialize()],
 						);
@@ -293,8 +292,7 @@ impl App {
 							sighash::TapSighashType::Default,
 						).expect("all prevouts provided");
 						trace!("Signing expired connector input for sighash {}", sighash);
-						let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
-						let sig = SECP.sign_schnorr(&msg, &connector_keypair);
+						let sig = SECP.sign_schnorr(&sighash.into(), &connector_keypair);
 						input.final_script_witness = Some(Witness::from_slice(&[sig[..].to_vec()]));
 					},
 				}

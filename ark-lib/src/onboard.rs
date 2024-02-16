@@ -8,7 +8,7 @@
 use bitcoin::{taproot, Amount, OutPoint, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness};
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, schnorr, KeyPair};
+use bitcoin::secp256k1::{schnorr, KeyPair};
 use bitcoin::sighash::{self, SighashCache, TapSighash};
 
 use crate::{fee, musig, util, Vtxo, VtxoSpec};
@@ -160,7 +160,7 @@ pub fn finish(
 	let final_sig = final_sig.expect("we provided the other sig");
 	debug_assert!(util::SECP.verify_schnorr(
 		&final_sig,
-		&secp256k1::Message::from_slice(&reveal_sighash[..]).unwrap(),
+		&reveal_sighash.into(),
 		&onboard_taproot(&user.spec).output_key().to_inner(),
 	).is_ok(), "invalid reveal tx signature produced");
 

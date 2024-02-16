@@ -5,7 +5,7 @@ use std::{cmp, io};
 use bitcoin::{
 	taproot, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
-use bitcoin::secp256k1::{self, schnorr, PublicKey, XOnlyPublicKey};
+use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::{ControlBlock, LeafVersion, TapNodeHash, TaprootBuilder};
 
@@ -279,9 +279,7 @@ impl SignedVtxoTree {
 		let pk = self.spec.cosign_taproot().output_key().to_inner();
 		let sighashes = self.spec.sighashes(self.utxo);
 		for (i, (sighash, sig)) in sighashes.into_iter().rev().zip(self.signatures.iter()).enumerate() {
-			//TODO(stevenroose) once we bump secp, replace all Message::from_slice with from_digest
-			let msg = secp256k1::Message::from_slice(&sighash[..]).unwrap();
-			util::SECP.verify_schnorr(sig, &msg, &pk)
+			util::SECP.verify_schnorr(sig, &sighash.into(), &pk)
 				.map_err(|e| format!("failed signature {}: sh {}; sig {}: {}", i, sighash, sig, e))?;
 		}
 		Ok(())
@@ -327,9 +325,7 @@ mod test {
 		let key1 = KeyPair::new(&secp, &mut rand::thread_rng()); // asp
 		let key2 = KeyPair::new(&secp, &mut rand::thread_rng());
 		let sha = sha256::Hash::from_str("4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a").unwrap();
-		let sig = secp.sign_schnorr(
-			&secp256k1::Message::from_slice(&sha[..]).unwrap(), &key1,
-		);
+		let sig = secp.sign_schnorr(&sha.into(), &key1);
 		let dest = VtxoRequest {
 			pubkey: KeyPair::new(&secp, &mut rand::thread_rng()).public_key(),
 			amount: Amount::from_sat(100_000),

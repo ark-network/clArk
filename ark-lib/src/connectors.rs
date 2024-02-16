@@ -6,8 +6,7 @@ use bitcoin::{
 	Address, Amount, Network, OutPoint, Script, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
 	Witness,
 };
-use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{self, KeyPair, PublicKey};
+use bitcoin::secp256k1::{KeyPair, PublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighashType};
 
 use crate::{fee, util};
@@ -163,9 +162,7 @@ impl<'a> iter::Iterator for ConnectorTxIter<'a> {
 			let sighash = shc.taproot_key_spend_signature_hash(
 				0, &sighash::Prevouts::All(&[&prevout]), TapSighashType::Default,
 			).expect("sighash error");
-			// TODO(stevenroose) use from_digest here after secp version update
-			let msg = secp256k1::Message::from_slice(&sighash.to_byte_array()).unwrap();
-			let sig = util::SECP.sign_schnorr(&msg, &keypair);
+			let sig = util::SECP.sign_schnorr(&sighash.into(), &keypair);
 			ret.input[0].witness = Witness::from_slice(&[sig[..].to_vec()]);
 		}
 
@@ -215,6 +212,7 @@ impl<'a> iter::FusedIterator for ConnectorTxIter<'a> {}
 mod test {
 	use super::*;
 	use bitcoin::Txid;
+	use bitcoin::hashes::Hash;
 	use rand;
 
 	#[test]

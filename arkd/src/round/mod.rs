@@ -603,6 +603,14 @@ pub async fn run_round_scheduler(
 			trace!("Storing round result");
 			app.db.store_round(round_tx.clone(), signed_vtxos)?;
 
+			//TODO(stevenroose) we should have a system that actually tracks that this tx is
+			// getting confirmed!
+			let spent_rounds = spendable_utxos.iter().map(|u| u.point.txid).collect::<HashSet<_>>();
+			for round in spent_rounds {
+				debug!("Removing round with id {} because UTXOs spent", round);
+				app.db.remove_round(round)?;
+			}
+
 			info!("Finished round {} with tx {}", round_id, round_tx.txid());
 			break 'attempt;
 		}

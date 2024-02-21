@@ -8,8 +8,8 @@ use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr;
 use rocksdb::{
-	BoundColumnFamily, DBRawIteratorWithThreadMode, Direction, IteratorMode,
-	OptimisticTransactionOptions, WriteBatchWithTransaction, WriteOptions,
+	BoundColumnFamily, FlushOptions, OptimisticTransactionOptions, WriteBatchWithTransaction,
+	WriteOptions,
 };
 
 
@@ -200,6 +200,13 @@ impl Db {
 				Err(e) => bail!("failed to commit db tx: {}", e),
 			}
 		}
+
+		let mut opts = FlushOptions::default();
+		opts.set_wait(true); //TODO(stevenroose) is this needed?
+		self.db.flush_cfs_opt(
+			&[&self.cf_round(), &self.cf_forfeit_vtxo(), &self.cf_round_expiry()], &opts,
+		).context("error flushing db")?;
+
 		Ok(())
 	}
 
@@ -210,10 +217,8 @@ impl Db {
 		};
 		let expiry_key = RoundExpiryKey::new(round.signed_tree.spec.expiry_height, id);
 
-		let mut opts = WriteOptions::default();
-		opts.set_sync(true);
-		let mut oopts = OptimisticTransactionOptions::new();
-		oopts.set_snapshot(false);
+		let opts = WriteOptions::default();
+		let oopts = OptimisticTransactionOptions::new();
 
 		//TODO(stevenroose) consider writing a macro for this sort of block
 		loop {
@@ -241,11 +246,9 @@ impl Db {
 	pub fn get_expired_rounds(&self, height: u32) -> anyhow::Result<Vec<Txid>> {
 		let mut ret = Vec::new();
 
-		let mut iter: DBRawIteratorWithThreadMode<_> =
-			self.db.iterator_cf(&self.cf_round_expiry(), IteratorMode::Start).into();
+		let mut iter = self.db.raw_iterator_cf(&self.cf_round_expiry());
 		iter.seek_to_first();
-		loop {
-			iter.status().context("round expiry iterator error")?;
+		while iter.valid() {
 			if let Some(key) = iter.key() {
 				let expkey = RoundExpiryKey::decode(key);
 				if expkey.expiry > height {
@@ -257,6 +260,7 @@ impl Db {
 				break;
 			}
 		}
+		iter.status().context("round expiry iterator error")?;
 
 		Ok(ret)
 	}
@@ -264,13 +268,9 @@ impl Db {
 	pub fn get_fresh_round_ids(&self, start_height: u32) -> anyhow::Result<Vec<Txid>> {
 		let mut ret = Vec::new();
 
-		let heightb = start_height.to_le_bytes();
-		let mode = IteratorMode::From(&heightb, Direction::Forward);
-		let mut iter: DBRawIteratorWithThreadMode<_> =
-			self.db.iterator_cf(&self.cf_round_expiry(), mode).into();
-		iter.seek_to_first();
-		loop {
-			iter.status().context("round expiry iterator error")?;
+		let mut iter = self.db.raw_iterator_cf(&self.cf_round_expiry());
+		iter.seek(&start_height.to_le_bytes());
+		while iter.valid() {
 			if let Some(key) = iter.key() {
 				ret.push(RoundExpiryKey::decode(key).id);
 				iter.next();
@@ -278,6 +278,7 @@ impl Db {
 				break;
 			}
 		}
+		iter.status().context("round expiry iterator error")?;
 
 		Ok(ret)
 	}
@@ -287,3 +288,6 @@ impl Db {
 		Ok(())
 	}
 }
+
+//TODO(stevenroose) write test to make sure the iterator in get_fresh_round_ids doesn't skip
+//any rounds on the same height.

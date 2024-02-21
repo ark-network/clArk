@@ -203,6 +203,34 @@ impl Db {
 		Ok(())
 	}
 
+	pub fn remove_round(&self, id: Txid) -> anyhow::Result<()> {
+		let round = match self.get_round(id)? {
+			Some(r) => r,
+			None => return Ok(()),
+		};
+		let expiry_key = RoundExpiryKey::new(round.signed_tree.spec.expiry_height, id);
+
+		let mut opts = WriteOptions::default();
+		opts.set_sync(true);
+		let mut oopts = OptimisticTransactionOptions::new();
+		oopts.set_snapshot(false);
+
+		//TODO(stevenroose) consider writing a macro for this sort of block
+		loop {
+			let tx = self.db.transaction_opt(&opts, &oopts);
+			tx.delete_cf(&self.cf_round(), id)?;
+			tx.delete_cf(&self.cf_round_expiry(), expiry_key.encode())?;
+
+			match tx.commit() {
+				Ok(()) => break,
+				Err(e) if e.kind() == rocksdb::ErrorKind::TryAgain => continue,
+				Err(e) if e.kind() == rocksdb::ErrorKind::Busy => continue,
+				Err(e) => bail!("failed to commit db tx: {}", e),
+			}
+		}
+		Ok(())
+	}
+
 	pub fn get_round(&self, id: Txid) -> anyhow::Result<Option<StoredRound>> {
 		Ok(self.db.get_pinned_cf(&self.cf_round(), id)?.map(|b| {
 			StoredRound::decode(&b).expect("corrupt db")

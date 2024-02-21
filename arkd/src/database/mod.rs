@@ -8,8 +8,8 @@ use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr;
 use rocksdb::{
-	BoundColumnFamily, Direction, IteratorMode, OptimisticTransactionOptions,
-	WriteBatchWithTransaction, WriteOptions,
+	BoundColumnFamily, DBRawIteratorWithThreadMode, Direction, IteratorMode,
+	OptimisticTransactionOptions, WriteBatchWithTransaction, WriteOptions,
 };
 
 
@@ -204,7 +204,7 @@ impl Db {
 	}
 
 	pub fn get_round(&self, id: Txid) -> anyhow::Result<Option<StoredRound>> {
-		Ok(self.db.get_cf(&self.cf_round(), id)?.map(|b| {
+		Ok(self.db.get_pinned_cf(&self.cf_round(), id)?.map(|b| {
 			StoredRound::decode(&b).expect("corrupt db")
 		}))
 	}
@@ -213,13 +213,21 @@ impl Db {
 	pub fn get_expired_rounds(&self, height: u32) -> anyhow::Result<Vec<Txid>> {
 		let mut ret = Vec::new();
 
-		let iter = self.db.iterator_cf(&self.cf_round_expiry(), IteratorMode::Start);
-		for res in iter {
-			let key = RoundExpiryKey::decode(&res.context("round expiry iterator error")?.0);
-			if key.expiry > height {
+		let mut iter: DBRawIteratorWithThreadMode<_> =
+			self.db.iterator_cf(&self.cf_round_expiry(), IteratorMode::Start).into();
+		iter.seek_to_first();
+		loop {
+			iter.status().context("round expiry iterator error")?;
+			if let Some(key) = iter.key() {
+				let expkey = RoundExpiryKey::decode(key);
+				if expkey.expiry > height {
+					break;
+				}
+				ret.push(expkey.id);
+				iter.next();
+			} else {
 				break;
 			}
-			ret.push(key.id);
 		}
 
 		Ok(ret)
@@ -230,10 +238,17 @@ impl Db {
 
 		let heightb = start_height.to_le_bytes();
 		let mode = IteratorMode::From(&heightb, Direction::Forward);
-		let iter = self.db.iterator_cf(&self.cf_round_expiry(), mode);
-		for res in iter {
-			let key = RoundExpiryKey::decode(&res.context("round expiry iterator error")?.0);
-			ret.push(key.id);
+		let mut iter: DBRawIteratorWithThreadMode<_> =
+			self.db.iterator_cf(&self.cf_round_expiry(), mode).into();
+		iter.seek_to_first();
+		loop {
+			iter.status().context("round expiry iterator error")?;
+			if let Some(key) = iter.key() {
+				ret.push(RoundExpiryKey::decode(key).id);
+				iter.next();
+			} else {
+				break;
+			}
 		}
 
 		Ok(ret)

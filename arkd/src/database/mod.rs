@@ -8,8 +8,8 @@ use bitcoin::{Amount, OutPoint, Transaction, Txid};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr;
 use rocksdb::{
-	BoundColumnFamily, IteratorMode, OptimisticTransactionOptions, WriteBatchWithTransaction,
-	WriteOptions,
+	BoundColumnFamily, Direction, IteratorMode, OptimisticTransactionOptions,
+	WriteBatchWithTransaction, WriteOptions,
 };
 
 
@@ -225,10 +225,12 @@ impl Db {
 		Ok(ret)
 	}
 
-	pub fn get_fresh_round_ids(&self) -> anyhow::Result<Vec<Txid>> {
+	pub fn get_fresh_round_ids(&self, start_height: u32) -> anyhow::Result<Vec<Txid>> {
 		let mut ret = Vec::new();
 
-		let iter = self.db.iterator_cf(&self.cf_round_expiry(), IteratorMode::Start);
+		let heightb = start_height.to_le_bytes();
+		let mode = IteratorMode::From(&heightb, Direction::Forward);
+		let iter = self.db.iterator_cf(&self.cf_round_expiry(), mode);
 		for res in iter {
 			let key = RoundExpiryKey::decode(&res.context("round expiry iterator error")?.0);
 			ret.push(key.id);

@@ -27,6 +27,12 @@ pub struct OnboardCosignResponse {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FreshRoundsRequest {
+    #[prost(uint32, tag = "1")]
+    pub start_height: u32,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FreshRounds {
     #[prost(bytes = "vec", repeated, tag = "1")]
     pub txids: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
@@ -211,7 +217,7 @@ pub mod ark_service_server {
         >;
         async fn get_fresh_rounds(
             &self,
-            request: tonic::Request<super::Empty>,
+            request: tonic::Request<super::FreshRoundsRequest>,
         ) -> std::result::Result<tonic::Response<super::FreshRounds>, tonic::Status>;
         async fn get_round(
             &self,
@@ -417,7 +423,9 @@ pub mod ark_service_server {
                 "/arkd.ArkService/GetFreshRounds" => {
                     #[allow(non_camel_case_types)]
                     struct GetFreshRoundsSvc<T: ArkService>(pub Arc<T>);
-                    impl<T: ArkService> tonic::server::UnaryService<super::Empty>
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::FreshRoundsRequest>
                     for GetFreshRoundsSvc<T> {
                         type Response = super::FreshRounds;
                         type Future = BoxFuture<
@@ -426,7 +434,7 @@ pub mod ark_service_server {
                         >;
                         fn call(
                             &mut self,
-                            request: tonic::Request<super::Empty>,
+                            request: tonic::Request<super::FreshRoundsRequest>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {

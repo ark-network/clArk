@@ -1,34 +1,36 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use bitcoin::{Amount, OutPoint, Transaction, Txid};
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr;
-use sled::transaction as tx;
+use rocksdb::{
+	BoundColumnFamily, IteratorMode, OptimisticTransactionOptions, WriteBatchWithTransaction,
+	WriteOptions,
+};
+
 
 use ark::{VtxoId, VtxoSpec};
 use ark::tree::signed::SignedVtxoTree;
-use sled_utils::BucketTree;
 
 
-// TREE KEYS
+// COLUMN FAMILIES
 
-const FORFEIT_VTXO_TREE: &str = "forfeited_vtxos";
-const ROUND_TREE: &str = "rounds";
-const ROUND_EXPIRY_TREE: &str = "rounds_by_expiry";
+/// mapping VtxoId -> ForfeitVtxo
+const CF_FORFEIT_VTXO: &str = "forfeited_vtxos";
+/// mapping Txid -> serialized StoredRound
+const CF_ROUND: &str = "rounds";
+/// set [expiry][txid]
+const CF_ROUND_EXPIRY: &str = "rounds_by_expiry";
 
-
-// ENTRY KEYS
+// ROOT ENTRY KEYS
 
 const MASTER_SEED: &str = "master_seed";
 const MASTER_MNEMONIC: &str = "master_mnemonic";
-const FRESH_ROUND_IDS: &str = "fresh_round_ids";
 
-
-pub struct Db {
-	db: sled::Db,
-}
 
 /// A vtxo that has been forfeited and is now ours.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -75,6 +77,37 @@ impl ForfeitVtxo {
 	}
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoundExpiryKey {
+	expiry: u32,
+	id: Txid,
+}
+
+impl RoundExpiryKey {
+	fn new(expiry: u32, id: Txid) -> Self {
+		Self { expiry, id }
+	}
+
+	fn encode(&self) -> [u8; 36] {
+		let mut ret = [0u8; 36];
+		ret[0..4].copy_from_slice(&self.expiry.to_le_bytes());
+		ret[4..].copy_from_slice(&self.id[..]);
+		ret
+	}
+
+	fn decode(b: &[u8]) -> Self {
+		assert_eq!(b.len(), 36, "corrupt round expiry key");
+		Self {
+			expiry: {
+				let mut buf = [0u8; 4];
+				buf[..].copy_from_slice(&b[0..4]);
+				u32::from_le_bytes(buf)
+			},
+			id: Txid::from_slice(&b[4..]).unwrap(),
+		}
+	}
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StoredRound {
 	pub tx: Transaction,
@@ -98,59 +131,80 @@ impl StoredRound {
 }
 
 
+pub struct Db {
+	db: rocksdb::OptimisticTransactionDB<rocksdb::MultiThreaded>,
+}
+
 impl Db {
 	pub fn open(path: &Path) -> anyhow::Result<Db> {
-		Ok(Db {
-			db: sled::open(path).context("failed to open db")?,
-		})
+		let mut opts = rocksdb::Options::default();
+		opts.create_if_missing(true);
+		opts.create_missing_column_families(true);
+
+		let cfs = [CF_FORFEIT_VTXO, CF_ROUND, CF_ROUND_EXPIRY];
+		let db = rocksdb::OptimisticTransactionDB::open_cf(&opts, path, cfs)
+			.context("failed to open db")?;
+		Ok(Db { db })
 	}
-	
-	/// Utility function for transactions that fixes the annoying generics.
-	fn transaction(&self,
-		f: impl Fn(&tx::TransactionalTree) -> tx::ConflictableTransactionResult<(), ()>,
-	) -> anyhow::Result<()> {
-		if let Err(e) = self.db.transaction(f) {
-			bail!("db error in transaction: {:?}", e)
-		} else {
-			Ok(())
-		}
+
+	fn cf_forfeit_vtxo<'a>(&'a self) -> Arc<BoundColumnFamily<'a>> {
+		self.db.cf_handle(CF_FORFEIT_VTXO).expect("db missing forfeit vtxo cf")
+	}
+
+	fn cf_round<'a>(&'a self) -> Arc<BoundColumnFamily<'a>> {
+		self.db.cf_handle(CF_ROUND).expect("db missing round cf")
+	}
+
+	fn cf_round_expiry<'a>(&'a self) -> Arc<BoundColumnFamily<'a>> {
+		self.db.cf_handle(CF_ROUND_EXPIRY).expect("db missing round expiry cf")
 	}
 
 	pub fn get_master_seed(&self) -> anyhow::Result<Option<Vec<u8>>> {
-		Ok(self.db.get(MASTER_SEED)?.map(|iv| iv.to_vec()))
+		Ok(self.db.get(MASTER_SEED)?)
 	}
 
 	pub fn store_master_mnemonic_and_seed(&self, mnemonic: &bip39::Mnemonic) -> anyhow::Result<()> {
-		Ok(self.transaction(|tx| {
-			tx.insert(MASTER_MNEMONIC, mnemonic.to_string().as_bytes())?;
-			tx.insert(MASTER_SEED, mnemonic.to_seed("").to_vec())?;
-			Ok(())
-		})?)
+		let mut b = WriteBatchWithTransaction::<true>::default();
+		b.put(MASTER_MNEMONIC, mnemonic.to_string().as_bytes());
+		b.put(MASTER_SEED, mnemonic.to_seed("").to_vec());
+		let mut opts = WriteOptions::default();
+		opts.set_sync(true);
+		self.db.write_opt(b, &opts)?;
+		Ok(())
 	}
 
 	pub fn store_round(&self, round_tx: Transaction, vtxos: SignedVtxoTree) -> anyhow::Result<()> {
-		let expiry = vtxos.spec.expiry_height;
 		let round = StoredRound {
 			tx: round_tx,
 			signed_tree: vtxos,
 		};
-		if self.db.open_tree(ROUND_TREE)?.insert(round.id(), round.encode())?.is_some() {
-			warn!("Round with id {} already present!", round.id());
+		let id = round.id();
+		let encoded_round = round.encode();
+		let expiry_key = RoundExpiryKey::new(round.signed_tree.spec.expiry_height, id);
+
+		let mut opts = WriteOptions::default();
+		opts.set_sync(true);
+		let mut oopts = OptimisticTransactionOptions::new();
+		oopts.set_snapshot(false);
+
+		//TODO(stevenroose) consider writing a macro for this sort of block
+		loop {
+			let tx = self.db.transaction_opt(&opts, &oopts);
+			tx.put_cf(&self.cf_round(), id, &encoded_round)?;
+			tx.put_cf(&self.cf_round_expiry(), expiry_key.encode(), [])?;
+
+			match tx.commit() {
+				Ok(()) => break,
+				Err(e) if e.kind() == rocksdb::ErrorKind::TryAgain => continue,
+				Err(e) if e.kind() == rocksdb::ErrorKind::Busy => continue,
+				Err(e) => bail!("failed to commit db tx: {}", e),
+			}
 		}
-		BucketTree::new(self.db.open_tree(ROUND_EXPIRY_TREE)?)
-			.insert(expiry.to_le_bytes(), &round.id())?;
-
-		let mut fresh = self.get_fresh_round_ids()?;
-		fresh.push(round.id());
-		let mut buf = Vec::new();
-		ciborium::into_writer(&fresh, &mut buf).unwrap();
-		self.db.insert(FRESH_ROUND_IDS, buf)?;
-
 		Ok(())
 	}
 
 	pub fn get_round(&self, id: Txid) -> anyhow::Result<Option<StoredRound>> {
-		Ok(self.db.open_tree(ROUND_TREE)?.get(id)?.map(|b| {
+		Ok(self.db.get_cf(&self.cf_round(), id)?.map(|b| {
 			StoredRound::decode(&b).expect("corrupt db")
 		}))
 	}
@@ -158,30 +212,33 @@ impl Db {
 	/// Get all round IDs of rounds that expired before or on [height].
 	pub fn get_expired_rounds(&self, height: u32) -> anyhow::Result<Vec<Txid>> {
 		let mut ret = Vec::new();
-		for res in BucketTree::<Txid>::new(self.db.open_tree(ROUND_EXPIRY_TREE)?).iter() {
-			let (keybuf, set) = res?;
-			let mut buf = [0u8; 4];
-			buf[..].copy_from_slice(&keybuf[..]);
-			let expiry = u32::from_le_bytes(buf);
-			if expiry > height {
+
+		let iter = self.db.iterator_cf(&self.cf_round_expiry(), IteratorMode::Start);
+		for res in iter {
+			let key = RoundExpiryKey::decode(&res.context("round expiry iterator error")?.0);
+			if key.expiry > height {
 				break;
 			}
-			ret.extend(set);
+			ret.push(key.id);
 		}
 
 		Ok(ret)
 	}
 
 	pub fn get_fresh_round_ids(&self) -> anyhow::Result<Vec<Txid>> {
-		Ok(self.db.get(FRESH_ROUND_IDS)?.map(|b| {
-			ciborium::from_reader(&b[..]).expect("corrupt db")
-		}).unwrap_or_default())
+		let mut ret = Vec::new();
+
+		let iter = self.db.iterator_cf(&self.cf_round_expiry(), IteratorMode::Start);
+		for res in iter {
+			let key = RoundExpiryKey::decode(&res.context("round expiry iterator error")?.0);
+			ret.push(key.id);
+		}
+
+		Ok(ret)
 	}
 
 	pub fn store_forfeit_vtxo(&self, vtxo: ForfeitVtxo) -> anyhow::Result<()> {
-		if self.db.open_tree(FORFEIT_VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?.is_some() {
-			warn!("Forfeit vtxo with id {} already present!", vtxo.id());
-		}
+		self.db.put_cf(&self.cf_forfeit_vtxo(), vtxo.id(), vtxo.encode())?;
 		Ok(())
 	}
 }

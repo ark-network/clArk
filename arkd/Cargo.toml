@@ -30,4 +30,5 @@ tonic.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 
+rocksdb = "0.22.0"
 sled.workspace = true

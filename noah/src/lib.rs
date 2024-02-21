@@ -247,7 +247,8 @@ impl Wallet {
 		//TODO(stevenroose) we won't do reorg handling here
 		let current_height = self.onchain.tip()?.0;
 		let last_sync_height = self.db.get_last_ark_sync_height()?;
-		let fresh_rounds = self.asp.get_fresh_rounds(rpc::Empty {}).await?.into_inner();
+		let req = rpc::FreshRoundsRequest { start_height: last_sync_height };
+		let fresh_rounds = self.asp.get_fresh_rounds(req).await?.into_inner();
 
 		for txid in fresh_rounds.txids {
 			let txid = Txid::from_slice(&txid).context("invalid txid from asp")?;

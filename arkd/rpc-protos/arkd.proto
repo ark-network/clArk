@@ -7,7 +7,7 @@ package arkd;
 service ArkService {
 	rpc GetArkInfo(Empty) returns (ArkInfo) {}
 	rpc RequestOnboardCosign(OnboardCosignRequest) returns (OnboardCosignResponse) {}
-	rpc GetFreshRounds(Empty) returns (FreshRounds) {}
+	rpc GetFreshRounds(FreshRoundsRequest) returns (FreshRounds) {}
 	rpc GetRound(RoundId) returns (RoundInfo) {}
 
 	// * ARK ROUND INTERACTIONS *
@@ -33,6 +33,10 @@ message OnboardCosignRequest {
 
 message OnboardCosignResponse {
 	bytes asp_part = 1;
+}
+
+message FreshRoundsRequest {
+	uint32 start_height = 1;
 }
 
 message FreshRounds {

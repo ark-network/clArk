@@ -12,9 +12,9 @@ mod rpcserver;
 mod round;
 mod util;
 
-use std::env;
+use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::str::FromStr;
 use std::time::Duration;
@@ -37,10 +37,12 @@ lazy_static::lazy_static! {
 }
 
 
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
 	pub network: bitcoin::Network,
 	pub public_rpc_address: SocketAddr,
-	pub datadir: PathBuf,
+	pub bitcoind_url: String,
+	pub bitcoind_cookie: String,
 
 	pub round_interval: Duration,
 	pub round_submit_time: Duration,
@@ -56,7 +58,8 @@ impl Default for Config {
 		Config {
 			network: bitcoin::Network::Regtest,
 			public_rpc_address: "127.0.0.1:3535".parse().unwrap(),
-			datadir: env::current_dir().unwrap().join("arkd-datadir"),
+			bitcoind_url: "http://127.0.0.1:38332".into(),
+			bitcoind_cookie: "~/.bitcoin/signet/.cookie".into(),
 			round_interval: Duration::from_secs(10),
 			round_submit_time: Duration::from_secs(2),
 			round_sign_time: Duration::from_secs(2),
@@ -74,29 +77,57 @@ pub struct App {
 	master_key: KeyPair,
 	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
-	// electrum: electrum_client::Client,
 	
 	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
 	round_input_tx: tokio::sync::mpsc::UnboundedSender<RoundInput>,
 }
 
 impl App {
-	pub fn start(config: Config) -> anyhow::Result<(Arc<Self>, tokio::task::JoinHandle<anyhow::Result<()>>)> {
-		let db_path = config.datadir.join("arkd_db");
+	pub fn create(datadir: &Path, config: Config) -> anyhow::Result<()> {
+		info!("Creating arkd server at {}", datadir.display());
+		trace!("Config: {:?}", config);
+
+		// create dir if not exit, but check that it's empty
+		fs::create_dir_all(&datadir).context("can't create dir")?;
+		if fs::read_dir(&datadir).context("can't read dir")?.next().is_some() {
+			bail!("dir is not empty");
+		}
+
+		// write the config to disk
+		let config_str = serde_json::to_string_pretty(&config)
+			.expect("serialization can't error");
+		fs::write(datadir.join("config.json"), config_str.as_bytes())
+			.context("failed to write config file")?;
+
+		// create mnemonic and store in empty db
+		let db_path = datadir.join("arkd_db");
+		info!("Loading db at {}", db_path.display());
+		let db = database::Db::open(&db_path).context("failed to open db")?;
+		let mnemonic = bip39::Mnemonic::generate(12).expect("12 is valid");
+		db.store_master_mnemonic_and_seed(&mnemonic)
+			.context("failed to store mnemonic")?;
+
+		Ok(())
+	}
+
+	pub fn start(datadir: &Path) -> anyhow::Result<(Arc<Self>, tokio::task::JoinHandle<anyhow::Result<()>>)> {
+		info!("Starting arkd at {}", datadir.display());
+
+		let config = {
+			let path = datadir.join("config.json");
+			let bytes = fs::read(&path)
+				.with_context(|| format!("failed to read config file: {}", path.display()))?;
+			serde_json::from_slice::<Config>(&bytes).context("invalid config file")?
+		};
+		trace!("Config: {:?}", config);
+
+		let db_path = datadir.join("arkd_db");
 		info!("Loading db at {}", db_path.display());
 		let db = database::Db::open(&db_path).context("failed to open db")?;
 
-		// check if this db is new
-		let seed = match db.get_master_seed().context("db error")? {
-			Some(s) => s,
-			None => {
-				// db is new, insert mnemonic and seed
-				let mnemonic = bip39::Mnemonic::generate(12).expect("12 is valid");
-				db.store_master_mnemonic_and_seed(&mnemonic)
-					.context("failed to store mnemonic")?;
-				mnemonic.to_seed("").to_vec()
-			}
-		};
+		let seed = db.get_master_seed()
+			.context("db error")?
+			.context("db doesn't contain seed")?;
 		let (master_key, xpriv) = {
 			let seed_xpriv = bip32::ExtendedPrivKey::new_master(config.network, &seed).unwrap();
 			let path = bip32::DerivationPath::from_str("m/0").unwrap();
@@ -106,7 +137,7 @@ impl App {
 		};
 
 		let wallet = {
-			let db_path = config.datadir.join("wallet.db");
+			let db_path = datadir.join("wallet.db");
 			info!("Loading wallet db from {}", db_path.display());
 			let db = bdk_file_store::Store::<bdk::wallet::ChangeSet>::open_or_create_new(
 				DB_MAGIC.as_bytes(), db_path,
@@ -118,10 +149,9 @@ impl App {
 				.context("failed to create or load bdk wallet")?
 		};
 
-		// let electrum_client = electrum_client::Client::new("ssl://electrum.blockstream.info:60002").unwrap();
 		let bitcoind = bdk_bitcoind_rpc::bitcoincore_rpc::Client::new(
-			"127.0.0.1:18443".into(),
-			bdk_bitcoind_rpc::bitcoincore_rpc::Auth::UserPass("user".into(), "pass".into()),
+			&config.bitcoind_url,
+			bdk_bitcoind_rpc::bitcoincore_rpc::Auth::CookieFile(config.bitcoind_cookie.as_str().into()),
 		).context("failed to create bitcoind rpc client")?;
 
 		let (round_event_tx, _rx) = tokio::sync::broadcast::channel(8);
@@ -154,6 +184,10 @@ impl App {
 		Ok((ret, jh))
 	}
 
+	pub async fn get_master_mnemonic(&self) -> anyhow::Result<String> {
+		Ok(self.db.get_master_mnemonic()?.expect("app running"))
+	}
+
 	pub async fn onchain_address(&self) -> anyhow::Result<Address> {
 		let mut wallet = self.wallet.lock().await;
 		let ret = wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address;
@@ -167,34 +201,21 @@ impl App {
 		let prev_tip = wallet.latest_checkpoint();
 		// let keychain_spks = self.wallet.spks_of_all_keychains();
 
+		debug!("Starting onchain sync at block height {}", prev_tip.height());
 		let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
 		while let Some(em) = emitter.next_block()? {
 			wallet.apply_block_connected_to(&em.block, em.block_height(), em.connected_to())?;
-			wallet.commit()?;
+
+			if em.block_height() % 10_000 == 0 {
+				debug!("Synced until block {}, committing...", em.block_height());
+				wallet.commit()?;
+			}
 		}
 
 		// mempool
 		let mempool = emitter.mempool()?;
 		wallet.apply_unconfirmed_txs(mempool.iter().map(|(tx, time)| (tx, *time)));
 		wallet.commit()?;
-
-		// // electrum
-		// let (
-		// 	ElectrumUpdate {
-		// 		chain_update,
-		// 		relevant_txids,
-		// 	},
-		// 	keychain_update,
-		// ) = self.electrum.full_scan(prev_tip, keychain_spks, STOP_GAP, BATCH_SIZE)?;
-		// let missing = relevant_txids.missing_full_txs(self.wallet.as_ref());
-		// let graph_update = relevant_txids.into_confirmation_time_tx_graph(&self.electrum, None, missing)?;
-		// let wallet_update = Update {
-		// 	last_active_indices: keychain_update,
-		// 	graph: graph_update,
-		// 	chain: Some(chain_update),
-		// };
-		// self.wallet.apply_update(wallet_update)?;
-		// self.wallet.commit()?;
 
 		let balance = wallet.get_balance();
 		Ok(Amount::from_sat(balance.total()))

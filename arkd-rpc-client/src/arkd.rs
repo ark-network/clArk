@@ -1,15 +1,17 @@
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArkInfo {
-    #[prost(bytes = "vec", tag = "1")]
-    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "1")]
+    pub network: ::prost::alloc::string::String,
     #[prost(bytes = "vec", tag = "2")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
     pub xonly_pubkey: ::prost::alloc::vec::Vec<u8>,
-    #[prost(uint32, tag = "3")]
-    pub nb_round_nonces: u32,
     #[prost(uint32, tag = "4")]
-    pub vtxo_exit_delta: u32,
+    pub nb_round_nonces: u32,
     #[prost(uint32, tag = "5")]
+    pub vtxo_exit_delta: u32,
+    #[prost(uint32, tag = "6")]
     pub vtxo_expiry_delta: u32,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]

@@ -1,4 +1,6 @@
 
+mod chain;
+pub use self::chain::ChainSource;
 
 use std::iter;
 use std::path::Path;
@@ -6,26 +8,30 @@ use std::path::Path;
 use anyhow::Context;
 use bdk::SignOptions;
 use bdk_file_store::Store;
+use bdk_esplora::EsploraAsyncExt;
 use bitcoin::{
-	bip32, psbt, Address, Amount, BlockHash, Network, OutPoint, Sequence, Transaction,
-	TxOut, Txid,
+	bip32, psbt, Address, Amount, Network, OutPoint, Sequence, Transaction, TxOut, Txid,
 };
 use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
 
 use crate::exit;
 use crate::psbtext::PsbtInputExt;
+use self::chain::ChainSourceClient;
 
 const DB_MAGIC: &str = "onchain_bdk";
 
-const TX_ALREADY_IN_CHAIN_ERROR: i32 = -27;
-
 pub struct Wallet {
 	wallet: bdk::Wallet<Store<'static, bdk::wallet::ChangeSet>>,
-	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
+	chain_source: ChainSourceClient,
 }
 
 impl Wallet {
-	pub fn create(network: Network, seed: [u8; 64], dir: &Path) -> anyhow::Result<Wallet> {
+	pub fn create(
+		network: Network,
+		seed: [u8; 64],
+		dir: &Path,
+		chain_source: ChainSource,
+	) -> anyhow::Result<Wallet> {
 		let db_path = dir.join("bdkwallet.db");
 		let db = Store::<bdk::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
 
@@ -37,61 +43,60 @@ impl Wallet {
 		let wallet = bdk::Wallet::new_or_load(&edesc, Some(&idesc), db, network)
 			.context("failed to create or load bdk wallet")?;
 		
-		// sync
-		// let electrum_client = electrum_client::Client::new("ssl://electrum.blockstream.info:60002").unwrap();
-		let bitcoind = bdk_bitcoind_rpc::bitcoincore_rpc::Client::new(
-			"127.0.0.1:18443".into(),
-			bdk_bitcoind_rpc::bitcoincore_rpc::Auth::UserPass("user".into(), "pass".into()),
-		).context("failed to create bitcoind rpc client")?;
-
-		Ok(Wallet {
-			wallet: wallet,
-			bitcoind: bitcoind,
-		})
+		let chain_source = ChainSourceClient::new(chain_source)?;
+		Ok(Wallet { wallet, chain_source })
 	}
 
-	pub fn bitcoind(&self) -> &bdk_bitcoind_rpc::bitcoincore_rpc::Client {
-		&self.bitcoind
+	pub async fn tip(&self) -> anyhow::Result<u32> {
+		self.chain_source.tip().await
 	}
 
-	pub fn tip(&self) -> anyhow::Result<(u32, BlockHash)> {
-		let he = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&self.bitcoind)?;
-		let ha = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_hash(&self.bitcoind, he)?;
-		Ok((he as u32, ha))
+	pub async fn broadcast_tx(&self, tx: &Transaction) -> anyhow::Result<()> {
+		self.chain_source.broadcast_tx(tx).await
 	}
 
-	pub fn sync(&mut self) -> anyhow::Result<Amount> {
+	pub async fn txout_confirmations(&self, outpoint: OutPoint) -> anyhow::Result<Option<u32>> {
+		self.chain_source.txout_confirmations(outpoint).await
+	}
+
+	pub async fn sync(&mut self) -> anyhow::Result<Amount> {
 		debug!("Starting wallet sync...");
 
 		let prev_tip = self.wallet.latest_checkpoint();
-		let mut emitter = bdk_bitcoind_rpc::Emitter::new(&self.bitcoind, prev_tip.clone(), prev_tip.height());
-		while let Some(em) = emitter.next_block()? {
-			self.wallet.apply_block_connected_to(&em.block, em.block_height(), em.connected_to())?;
-			self.wallet.commit()?;
+		match self.chain_source {
+			ChainSourceClient::Bitcoind(ref bitcoind) => {
+				let mut emitter = bdk_bitcoind_rpc::Emitter::new(
+					bitcoind, prev_tip.clone(), prev_tip.height(),
+				);
+				while let Some(em) = emitter.next_block()? {
+					self.wallet.apply_block_connected_to(
+						&em.block, em.block_height(), em.connected_to(),
+					)?;
+					self.wallet.commit()?;
+				}
+
+				let mempool = emitter.mempool()?;
+				self.wallet.apply_unconfirmed_txs(mempool.iter().map(|(tx, time)| (tx, *time)));
+				self.wallet.commit()?;
+			},
+			ChainSourceClient::Esplora(ref client) => {
+				const STOP_GAP: usize = 50;
+
+				let prev_tip = self.wallet.latest_checkpoint();
+				let keychain_spks = self.wallet.spks_of_all_keychains().into_iter().collect();
+				let (update_graph, last_active_indices) =
+					client.full_scan(keychain_spks, STOP_GAP, 4).await?;
+				let missing_heights = update_graph.missing_heights(self.wallet.local_chain());
+				let chain_update = client.update_local_chain(prev_tip, missing_heights).await?;
+				let update = bdk::wallet::Update {
+					last_active_indices,
+					graph: update_graph,
+					chain: Some(chain_update),
+				};
+				self.wallet.apply_update(update)?;
+				self.wallet.commit()?;
+			},
 		}
-
-		// mempool
-		let mempool = emitter.mempool()?;
-		self.wallet.apply_unconfirmed_txs(mempool.iter().map(|(tx, time)| (tx, *time)));
-		self.wallet.commit()?;
-
-		// // electrum
-		// let (
-		// 	ElectrumUpdate {
-		// 		chain_update,
-		// 		relevant_txids,
-		// 	},
-		// 	keychain_update,
-		// ) = self.electrum.full_scan(prev_tip, keychain_spks, STOP_GAP, BATCH_SIZE)?;
-		// let missing = relevant_txids.missing_full_txs(self.wallet.as_ref());
-		// let graph_update = relevant_txids.into_confirmation_time_tx_graph(&self.electrum, None, missing)?;
-		// let wallet_update = Update {
-		// 	last_active_indices: keychain_update,
-		// 	graph: graph_update,
-		// 	chain: Some(chain_update),
-		// };
-		// self.wallet.apply_update(wallet_update)?;
-		// self.wallet.commit()?;
 
 		let balance = self.wallet.get_balance();
 		Ok(Amount::from_sat(balance.total()))
@@ -127,22 +132,12 @@ impl Wallet {
 		Ok(psbt.extract_tx())
 	}
 
-	pub fn broadcast_tx(&self, tx: &Transaction) -> anyhow::Result<Txid> {
-		// self.electrum.transaction_broadcast(&tx)?;
-		match bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&self.bitcoind, tx) {
-			Ok(_) => Ok(tx.txid()),
-			Err(bdk_bitcoind_rpc::bitcoincore_rpc::Error::JsonRpc(
-				bdk_bitcoind_rpc::bitcoincore_rpc::jsonrpc::Error::Rpc(e))
-			) if e.code == TX_ALREADY_IN_CHAIN_ERROR => Ok(tx.txid()),
-			Err(e) => Err(e.into()),
-		}
-	}
-
-	pub fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
-		self.sync().context("sync error")?;
+	pub async fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
+		self.sync().await.context("sync error")?;
 		let psbt = self.prepare_tx(dest, amount)?;
 		let tx = self.finish_tx(psbt)?;
-		self.broadcast_tx(&tx)
+		self.broadcast_tx(&tx).await?;
+		Ok(tx.txid())
 	}
 
 	pub fn new_address(&mut self) -> anyhow::Result<Address> {
@@ -172,12 +167,12 @@ impl Wallet {
 		}
 	}
 
-	pub fn spend_fee_anchors(
+	pub async fn spend_fee_anchors(
 		&mut self,
 		anchors: &[OutPoint],
 		package_vsize: usize,
 	) -> anyhow::Result<Transaction> {
-		self.sync().context("sync error")?;
+		self.sync().await.context("sync error")?;
 
 		// Since BDK doesn't support adding extra weight for fees, we have to
 		// first build the tx regularly, and then build it again.
@@ -214,13 +209,13 @@ impl Wallet {
 		b.fee_absolute(total_fee);
 		let psbt = b.finish().expect("failed to craft anchor spend tx");
 		let tx = self.finish_tx(psbt).context("error finalizing anchor spend tx")?;
-		self.broadcast_tx(&tx).context("failed to broadcast fee anchor spend")?;
+		self.broadcast_tx(&tx).await.context("failed to broadcast fee anchor spend")?;
 		Ok(tx)
 	}
 
-	pub fn create_exit_claim_tx(&mut self, inputs: &[exit::ClaimInput]) -> anyhow::Result<Psbt> {
+	pub async fn create_exit_claim_tx(&mut self, inputs: &[exit::ClaimInput]) -> anyhow::Result<Psbt> {
 		assert!(!inputs.is_empty());
-		self.sync().context("sync error")?;
+		self.sync().await.context("sync error")?;
 
 		let urgent_fee_rate = self.urgent_fee_rate();
 

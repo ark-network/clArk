@@ -68,7 +68,7 @@ impl Wallet {
 					);
 
 					debug!("Broadcasting reveal tx for vtxo {}: {}", id, reveal_tx.txid());
-					if let Err(e) = self.onchain.broadcast_tx(&reveal_tx) {
+					if let Err(e) = self.onchain.broadcast_tx(&reveal_tx).await {
 						error!("Error broadcasting reveal tx for onboard vtxo {}: {}", id, e);
 						continue;
 					}
@@ -84,7 +84,7 @@ impl Wallet {
 						exit_branch.len(), id, exit_branch.iter().map(|t| t.txid()).collect::<Vec<_>>());
 					let mut branch_size = 0;
 					for tx in &exit_branch {
-						if let Err(e) = self.onchain.broadcast_tx(&tx) {
+						if let Err(e) = self.onchain.broadcast_tx(&tx).await {
 							error!("Error broadcasting exit branch tx {} for vtxo {}: {}",
 								tx.txid(), id, e,
 							);
@@ -123,7 +123,7 @@ impl Wallet {
 		self.db.store_claim_inputs(&claim_inputs).context("db error storing claim inputs")?;
 
 		// Then we'll send a tx that will pay the fee for all the txs we made.
-		let tx = self.onchain.spend_fee_anchors(&fee_anchors, total_size)?;
+		let tx = self.onchain.spend_fee_anchors(&fee_anchors, total_size).await?;
 		info!("Sent anchor spend tx: {}", tx.txid());
 
 		// After we succesfully stored the claim inputs, we can drop the vtxos.
@@ -139,28 +139,27 @@ impl Wallet {
 	/// Returns all the pending exit claims, first the claimable ones and then
 	/// the unclaimable ones.
 	pub async fn unclaimed_exits(&self) -> anyhow::Result<(Vec<ClaimInput>, Vec<ClaimInput>)> {
-		let bitcoind = self.onchain.bitcoind();
 		let all_inputs = self.db.get_claim_inputs()?;
 		//TODO(stevenroose) we need to find a way of what to do with the inputs
 		// that are already spent
 		let mut claimable = Vec::with_capacity(all_inputs.len());
 		let mut unclaimable = Vec::with_capacity(all_inputs.len());
 		for input in all_inputs {
-			if let Ok(Some(txout))=  bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_tx_out(
-				bitcoind,
-				&input.utxo.txid,
-				input.utxo.vout,
-				Some(true), // include mempool
-			) {
-				if txout.confirmations >= input.spec.exit_delta as u32 {
-					claimable.push(input);
-					continue;
-				} else {
-					trace!("Claim input {} has only {} confirmations (need {})",
-						input.utxo, txout.confirmations, input.spec.exit_delta);
-				}
-			} else {
-				warn!("Claim input {} not found in utxo set or mempool...", input.utxo);
+			match self.onchain.txout_confirmations(input.utxo).await {
+				Ok(Some(confs)) => {
+					if confs >= input.spec.exit_delta as u32 {
+						claimable.push(input);
+						continue;
+					} else {
+						trace!("Claim input {} has only {} confirmations (need {})",
+							input.utxo, confs, input.spec.exit_delta);
+					}
+				},
+				Ok(None) => warn!("Claim input {} not found in utxo set...", input.utxo),
+				Err(e) => {
+					trace!("Error from chain source: {}", e);
+					warn!("Claim input {} not found in utxo set...", input.utxo);
+				},
 			}
 			unclaimable.push(input);
 		}
@@ -179,7 +178,7 @@ impl Wallet {
 			total_amount, inputs.iter().map(|i| i.utxo.to_string()).collect::<Vec<_>>(),
 		);
 
-		let mut psbt = self.onchain.create_exit_claim_tx(&inputs)?;
+		let mut psbt = self.onchain.create_exit_claim_tx(&inputs).await?;
 
 		// Sign all the claim inputs.
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
@@ -219,7 +218,7 @@ impl Wallet {
 
 		// Then sign the wallet's funding inputs.
 		let tx = self.onchain.finish_tx(psbt).context("finishing claim psbt")?;
-		if let Err(e) = self.onchain.broadcast_tx(&tx) {
+		if let Err(e) = self.onchain.broadcast_tx(&tx).await {
 			bail!("Error broadcasting claim tx: {}", e);
 		}
 
@@ -227,7 +226,6 @@ impl Wallet {
 		self.db.store_claim_inputs(&remaining).context("failed db update")?;
 
 		info!("Successfully claimed total value of {}", total_amount);
-
 		Ok(())
 	}
 }

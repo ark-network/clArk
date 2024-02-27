@@ -159,10 +159,6 @@ impl Db {
 		self.db.cf_handle(CF_ROUND_EXPIRY).expect("db missing round expiry cf")
 	}
 
-	pub fn get_master_seed(&self) -> anyhow::Result<Option<Vec<u8>>> {
-		Ok(self.db.get(MASTER_SEED)?)
-	}
-
 	pub fn store_master_mnemonic_and_seed(&self, mnemonic: &bip39::Mnemonic) -> anyhow::Result<()> {
 		let mut b = WriteBatchWithTransaction::<true>::default();
 		b.put(MASTER_MNEMONIC, mnemonic.to_string().as_bytes());
@@ -171,6 +167,14 @@ impl Db {
 		opts.set_sync(true);
 		self.db.write_opt(b, &opts)?;
 		Ok(())
+	}
+
+	pub fn get_master_seed(&self) -> anyhow::Result<Option<Vec<u8>>> {
+		Ok(self.db.get(MASTER_SEED)?)
+	}
+
+	pub fn get_master_mnemonic(&self) -> anyhow::Result<Option<String>> {
+		Ok(self.db.get(MASTER_MNEMONIC)?.map(|b| String::from_utf8(b)).transpose()?)
 	}
 
 	pub fn store_round(&self, round_tx: Transaction, vtxos: SignedVtxoTree) -> anyhow::Result<()> {

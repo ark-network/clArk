@@ -87,13 +87,13 @@ impl OffboardRequest {
 		Some(fee_rate * Weight::from_vb(vb).expect("no overflow"))
 	}
 
-    /// Validate that the offboard has a valid script.
+	/// Validate that the offboard has a valid script.
 	pub fn validate(&self) -> Result<(), &'static str> {
 		if Self::calculate_fee(&self.script_pubkey, FeeRate::ZERO).is_none() {
-            Err("invalid script")
-        } else {
-            Ok(())
-        }
+			Err("invalid script")
+		} else {
+			Ok(())
+		}
 	}
 
 	/// Convert into a tx output.

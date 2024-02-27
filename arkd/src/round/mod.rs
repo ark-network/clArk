@@ -430,6 +430,7 @@ pub async fn run_round_scheduler(
 				#[cfg(debug_assertions)]
 				partial_sigs.push(_partial);
 			}
+			#[cfg(debug_assertions)]
 			debug_assert!(validate_partial_vtxo_sigs(
 				cosigners.iter().copied(),
 				&agg_vtxo_nonces,

@@ -9,9 +9,9 @@ mod onchain;
 mod psbtext;
 
 
-use std::{env, fs, iter};
+use std::{fs, iter};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{bail, Context};
@@ -38,19 +38,48 @@ pub struct ArkInfo {
 	pub vtxo_exit_delta: u16,
 }
 
-#[derive(Debug, Clone)]
+/// Configuration of the Noah wallet.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct Config {
+	/// The Bitcoin network to run Noah on.
+	///
+	/// Default value: signet.
 	pub network: Network,
-	pub datadir: PathBuf,
+
+	/// The address of your ASP.
 	pub asp_address: String,
+
+	/// The address of the Esplora HTTP server to use.
+	///
+	/// Either this or the `bitcoind_address` field has to be provided.
+	pub esplora_address: Option<String>,
+
+	/// The address of the bitcoind RPC server to use.
+	///
+	/// Either this or the `esplora_address` field has to be provided.
+	pub bitcoind_address: Option<String>,
+
+	/// The bitcoind RPC username.
+	///
+	/// Only used with `bitcoind_address`.
+	pub bitcoind_user: Option<String>,
+
+	/// The bitcoind RPC password.
+	///
+	/// Only used with `bitcoind_address`.
+	pub bitcoind_pass: Option<String>,
 }
 
 impl Default for Config {
 	fn default() -> Config {
 		Config {
-			network: Network::Regtest,
-			datadir: env::current_dir().unwrap().join("noah-datadir"),
+			network: Network::Signet,
 			asp_address: "127.0.0.1:3535".parse().unwrap(),
+			esplora_address: None,
+			bitcoind_address: None,
+			bitcoind_user: None,
+			bitcoind_pass: None,
 		}
 	}
 }
@@ -67,43 +96,72 @@ pub struct Wallet {
 
 impl Wallet {
 	/// Create new wallet.
-	pub async fn create(config: Config) -> anyhow::Result<Wallet> {
-		info!("Creating new noah Wallet at {}", config.datadir.display());
+	pub async fn create(datadir: &Path, config: Config) -> anyhow::Result<Wallet> {
+		info!("Creating new noah Wallet at {}", datadir.display());
+		trace!("Config: {:?}", config);
 
 		// create dir if not exit, but check that it's empty
-		fs::create_dir_all(&config.datadir).context("can't create dir")?;
-		if fs::read_dir(&config.datadir).context("can't read dir")?.next().is_some() {
+		fs::create_dir_all(&datadir).context("can't create dir")?;
+		if fs::read_dir(&datadir).context("can't read dir")?.next().is_some() {
 			bail!("dir is not empty");
 		}
+
+		// write the config to disk
+		let config_str = serde_json::to_string_pretty(&config)
+			.expect("serialization can't error");
+		fs::write(datadir.join("config.json"), config_str.as_bytes())
+			.context("failed to write config file")?;
 
 		// generate seed
 		let mnemonic = bip39::Mnemonic::generate(12).expect("12 is valid");
 
 		// write it to file
-		fs::write(config.datadir.join("mnemonic"), mnemonic.to_string().as_bytes())
+		fs::write(datadir.join("mnemonic"), mnemonic.to_string().as_bytes())
 			.context("failed to write mnemonic")?;
 
 		// from then on we can open the wallet
-		Ok(Wallet::open(config).await.context("failed to open")?)
+		Ok(Wallet::open(&datadir).await.context("failed to open")?)
 	}
 
 	/// Open existing wallet.
-	pub async fn open(config: Config) -> anyhow::Result<Wallet> {
-		info!("Opening noah Wallet at {}", config.datadir.display());
+	pub async fn open(datadir: &Path) -> anyhow::Result<Wallet> {
+		info!("Opening noah Wallet at {}", datadir.display());
+
+		let config = {
+			let path = datadir.join("config.json");
+			let bytes = fs::read(&path)
+				.with_context(|| format!("failed to read config file: {}", path.display()))?;
+			serde_json::from_slice::<Config>(&bytes).context("invalid config file")?
+		};
+		trace!("Config: {:?}", config);
 
 		// read mnemonic file
-		let mnemonic_path = config.datadir.join("mnemonic");
+		let mnemonic_path = datadir.join("mnemonic");
 		let mnemonic_str = fs::read_to_string(&mnemonic_path)
 			.with_context(|| format!("failed to read mnemonic file at {}", mnemonic_path.display()))?;
 		let mnemonic = bip39::Mnemonic::from_str(&mnemonic_str).context("broken mnemonic")?;
+		let seed = mnemonic.to_seed("");
+
+		//TODO(stevenroose) check if bitcoind has txindex enabled
 
 		// create on-chain wallet
-		let seed = mnemonic.to_seed("");
-		let onchain = onchain::Wallet::create(config.network, seed, &config.datadir)
+		let chain_source = if let Some(ref url) = config.esplora_address {
+			onchain::ChainSource::Esplora {
+				url: url.clone(),
+			}
+		} else if let Some(ref url) = config.bitcoind_address {
+			onchain::ChainSource::Bitcoind {
+				url: url.clone(),
+				user: config.bitcoind_user.clone().context("need bitcoind_user config")?,
+				pass: config.bitcoind_pass.clone().context("need bitcoind_pass config")?,
+			}
+		} else {
+			bail!("Need to either provide esplora or bitcoind info");
+		};
+		let onchain = onchain::Wallet::create(config.network, seed, &datadir, chain_source)
 			.context("failed to create onchain wallet")?;
 
-		// open db
-		let db = database::Db::open(&config.datadir.join("db")).context("failed to open db")?;
+		let db = database::Db::open(&datadir.join("db")).context("failed to open db")?;
 
 		let vtxo_seed = {
 			let master = bip32::ExtendedPrivKey::new_master(config.network, &seed).unwrap();
@@ -118,6 +176,9 @@ impl Wallet {
 		let ark_info = {
 			let res = asp.get_ark_info(rpc::Empty{})
 				.await.context("ark info request failed")?.into_inner();
+			if config.network != res.network.parse().context("invalid network from asp")? {
+				bail!("ASP is for net {} while we are on net {}", res.network, config.network);
+			}
 			ArkInfo {
 				asp_pubkey: PublicKey::from_slice(&res.pubkey).context("asp pubkey")?,
 				nb_round_nonces: res.nb_round_nonces as usize,
@@ -129,12 +190,16 @@ impl Wallet {
 		Ok(Wallet { config, db, onchain, vtxo_seed, asp, ark_info })
 	}
 
+	pub fn config(&self) -> &Config {
+		&self.config
+	}
+
 	pub fn get_new_onchain_address(&mut self) -> anyhow::Result<Address> {
 		self.onchain.new_address()
 	}
 
-	pub fn onchain_balance(&mut self) -> anyhow::Result<Amount> {
-		self.onchain.sync()
+	pub async fn onchain_balance(&mut self) -> anyhow::Result<Amount> {
+		self.onchain.sync().await
 	}
 
 	pub async fn offchain_balance(&mut self) -> anyhow::Result<Amount> {
@@ -164,7 +229,7 @@ impl Wallet {
 		//TODO(stevenroose) impl key derivation
 		let key = self.vtxo_seed.to_keypair(&SECP);
 
-		let current_height = self.onchain.tip()?.0;
+		let current_height = self.onchain.tip().await?;
 		let spec = ark::VtxoSpec {
 			user_pubkey: key.public_key(),
 			asp_pubkey: self.ark_info.asp_pubkey,
@@ -176,7 +241,7 @@ impl Wallet {
 		let addr = Address::from_script(&ark::onboard::onboard_spk(&spec), self.config.network).unwrap();
 
 		// We create the onboard tx template, but don't sign it yet.
-		self.onchain.sync().context("sync error")?;
+		self.onchain.sync().await.context("sync error")?;
 		let onboard_tx = self.onchain.prepare_tx(addr, onboard_amount)?;
 		let utxo = OutPoint::new(onboard_tx.unsigned_tx.txid(), 0);
 
@@ -200,7 +265,7 @@ impl Wallet {
 
 		let tx = self.onchain.finish_tx(onboard_tx)?;
 		trace!("Broadcasting onboard tx: {}", bitcoin::consensus::encode::serialize_hex(&tx));
-		self.onchain.broadcast_tx(&tx)?;
+		self.onchain.broadcast_tx(&tx).await?;
 
 		info!("Onboard successfull");
 
@@ -245,30 +310,13 @@ impl Wallet {
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
 
 		//TODO(stevenroose) we won't do reorg handling here
-		let current_height = self.onchain.tip()?.0;
+		let current_height = self.onchain.tip().await?;
 		let last_sync_height = self.db.get_last_ark_sync_height()?;
 		let req = rpc::FreshRoundsRequest { start_height: last_sync_height };
 		let fresh_rounds = self.asp.get_fresh_rounds(req).await?.into_inner();
 
 		for txid in fresh_rounds.txids {
 			let txid = Txid::from_slice(&txid).context("invalid txid from asp")?;
-			let tx = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_raw_transaction_info(
-				self.onchain.bitcoind(), &txid, None,
-			)?;
-			//TODO(stevenroose) simple reorg handling would be to check for 6 confs here
-			if let Some(hash) = tx.blockhash {
-				let blk = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_header_info(
-					self.onchain.bitcoind(), &hash,
-				)?;
-				if blk.height <= last_sync_height as usize {
-					continue;
-				}
-			} else {
-				trace!("Syncing unconfirmed round {}", txid);
-			}
-			//TODO(stevenroose) we are thus doing mempool rounds multiple times
-
-			// Sync this round.
 			let req = rpc::RoundId { txid: txid.to_byte_array().to_vec() };
 			let round = self.asp.get_round(req).await?.into_inner();
 
@@ -291,8 +339,8 @@ impl Wallet {
 		Ok(())
 	}
 
-	pub fn send_onchain(&mut self, addr: Address, amount: Amount) -> anyhow::Result<Txid> {
-		Ok(self.onchain.send_money(addr, amount)?)
+	pub async fn send_onchain(&mut self, addr: Address, amount: Amount) -> anyhow::Result<Txid> {
+		Ok(self.onchain.send_money(addr, amount).await?)
 	}
 
 	pub async fn offboard_all(&mut self) -> anyhow::Result<()> {
@@ -405,7 +453,7 @@ impl Wallet {
 		>,
 	) -> anyhow::Result<()> {
 		self.sync_ark().await.context("ark sync error")?;
-		let current_height = self.onchain.tip()?.0;
+		let current_height = self.onchain.tip().await?;
 
 		//TODO(stevenroose) impl key derivation
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
@@ -686,7 +734,7 @@ impl Wallet {
 
 			// We also broadcast the tx, just to have it go around faster.
 			info!("Round finished, broadcasting round tx {}", round_tx.txid());
-			if let Err(e) = self.onchain.broadcast_tx(&round_tx) {
+			if let Err(e) = self.onchain.broadcast_tx(&round_tx).await {
 				warn!("Couldn't broadcast round tx: {}", e);
 			}
 

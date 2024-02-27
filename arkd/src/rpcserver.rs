@@ -49,6 +49,7 @@ impl rpc::ArkService for Arc<App> {
 		_req: tonic::Request<rpc::Empty>,
 	) -> Result<tonic::Response<rpc::ArkInfo>, tonic::Status> {
 		let ret = rpc::ArkInfo {
+			network: self.config.network.to_string(),
 			pubkey: self.master_key.public_key().serialize().to_vec(),
 			xonly_pubkey: self.master_key.x_only_public_key().0.serialize().to_vec(),
 			nb_round_nonces: self.config.nb_round_nonces as u32,

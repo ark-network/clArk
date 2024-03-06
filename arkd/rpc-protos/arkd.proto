@@ -6,9 +6,16 @@ package arkd;
 /// Public ark service for arkd.
 service ArkService {
 	rpc GetArkInfo(Empty) returns (ArkInfo) {}
-	rpc RequestOnboardCosign(OnboardCosignRequest) returns (OnboardCosignResponse) {}
 	rpc GetFreshRounds(FreshRoundsRequest) returns (FreshRounds) {}
 	rpc GetRound(RoundId) returns (RoundInfo) {}
+
+	// * ONBOARDING *
+	rpc RequestOnboardCosign(OnboardCosignRequest) returns (OnboardCosignResponse) {}
+
+	// * OOR PAYMENTS*
+	rpc RequestOorCosign(OorCosignRequest) returns (OorCosignResponse) {}
+	rpc PostOorMailbox(OorVtxo) returns (Empty) {}
+	rpc EmptyOorMailbox(OorVtxosRequest) returns (OorVtxosResponse) {}
 
 	// * ARK ROUND INTERACTIONS *
 
@@ -27,15 +34,6 @@ message ArkInfo {
 	uint32 vtxo_expiry_delta = 6;
 }
 
-message OnboardCosignRequest {
-	/// Serialized `UserPart`
-	bytes user_part = 1;
-}
-
-message OnboardCosignResponse {
-	bytes asp_part = 1;
-}
-
 message FreshRoundsRequest {
 	uint32 start_height = 1;
 }
@@ -52,6 +50,44 @@ message RoundInfo {
 	bytes round_tx = 1;
 	bytes signed_vtxos = 2;
 }
+
+// onboard
+
+message OnboardCosignRequest {
+	/// Serialized `UserPart`
+	bytes user_part = 1;
+}
+
+message OnboardCosignResponse {
+	bytes asp_part = 1;
+}
+
+// oor
+
+message OorCosignRequest {
+	bytes payment = 1;
+	repeated bytes pub_nonces = 2;
+}
+
+message OorCosignResponse {
+	repeated bytes pub_nonces = 1;
+	repeated bytes partial_sigs = 2;
+}
+
+message OorVtxo {
+	bytes pubkey = 1;
+	bytes vtxo = 2;
+}
+
+message OorVtxosRequest {
+	bytes pubkey = 1;
+}
+
+message OorVtxosResponse {
+	repeated bytes vtxos = 1;
+}
+
+// round
 
 message RoundStart {
 	uint64 round_id = 1;

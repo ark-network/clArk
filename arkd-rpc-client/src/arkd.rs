@@ -16,19 +16,6 @@ pub struct ArkInfo {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OnboardCosignRequest {
-    /// / Serialized `UserPart`
-    #[prost(bytes = "vec", tag = "1")]
-    pub user_part: ::prost::alloc::vec::Vec<u8>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OnboardCosignResponse {
-    #[prost(bytes = "vec", tag = "1")]
-    pub asp_part: ::prost::alloc::vec::Vec<u8>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FreshRoundsRequest {
     #[prost(uint32, tag = "1")]
     pub start_height: u32,
@@ -52,6 +39,55 @@ pub struct RoundInfo {
     pub round_tx: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OnboardCosignRequest {
+    /// / Serialized `UserPart`
+    #[prost(bytes = "vec", tag = "1")]
+    pub user_part: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OnboardCosignResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub asp_part: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorCosignRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub payment: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorCosignResponse {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub partial_sigs: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorVtxo {
+    #[prost(bytes = "vec", tag = "1")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub vtxo: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorVtxosRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorVtxosResponse {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub vtxos: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -307,31 +343,6 @@ pub mod ark_service_client {
                 .insert(GrpcMethod::new("arkd.ArkService", "GetArkInfo"));
             self.inner.unary(req, path, codec).await
         }
-        pub async fn request_onboard_cosign(
-            &mut self,
-            request: impl tonic::IntoRequest<super::OnboardCosignRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::OnboardCosignResponse>,
-            tonic::Status,
-        > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::new(
-                        tonic::Code::Unknown,
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
-            let codec = tonic::codec::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static(
-                "/arkd.ArkService/RequestOnboardCosign",
-            );
-            let mut req = request.into_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("arkd.ArkService", "RequestOnboardCosign"));
-            self.inner.unary(req, path, codec).await
-        }
         pub async fn get_fresh_rounds(
             &mut self,
             request: impl tonic::IntoRequest<super::FreshRoundsRequest>,
@@ -371,6 +382,105 @@ pub mod ark_service_client {
             let path = http::uri::PathAndQuery::from_static("/arkd.ArkService/GetRound");
             let mut req = request.into_request();
             req.extensions_mut().insert(GrpcMethod::new("arkd.ArkService", "GetRound"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// * ONBOARDING *
+        pub async fn request_onboard_cosign(
+            &mut self,
+            request: impl tonic::IntoRequest<super::OnboardCosignRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::OnboardCosignResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/RequestOnboardCosign",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "RequestOnboardCosign"));
+            self.inner.unary(req, path, codec).await
+        }
+        /// * OOR PAYMENTS*
+        pub async fn request_oor_cosign(
+            &mut self,
+            request: impl tonic::IntoRequest<super::OorCosignRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::OorCosignResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/RequestOorCosign",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "RequestOorCosign"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn post_oor_mailbox(
+            &mut self,
+            request: impl tonic::IntoRequest<super::OorVtxo>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/PostOorMailbox",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "PostOorMailbox"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn empty_oor_mailbox(
+            &mut self,
+            request: impl tonic::IntoRequest<super::OorVtxosRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::OorVtxosResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.ArkService/EmptyOorMailbox",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.ArkService", "EmptyOorMailbox"));
             self.inner.unary(req, path, codec).await
         }
         pub async fn subscribe_rounds(

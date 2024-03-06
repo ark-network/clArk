@@ -55,10 +55,10 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 
 pub fn forfeit_sighash(vtxo: &Vtxo, connector: OutPoint) -> (TapSighash, Transaction) {
 	let spec = vtxo.spec();
-	let exit_spk = vtxo.spec().exit_spk();
+	let exit_spk = spec.exit_spk();
 	let exit_prevout = TxOut {
 		script_pubkey: exit_spk,
-		value: spec.amount.to_sat(),
+		value: vtxo.amount().to_sat(),
 	};
 	let connector_prevout = TxOut {
 		script_pubkey: ConnectorChain::output_script(spec.asp_pubkey),

@@ -46,7 +46,7 @@ impl Db {
 		}
 	}
 
-	pub fn store_vtxo(&self, vtxo: Vtxo) -> anyhow::Result<()> {
+	pub fn store_vtxo(&self, vtxo: &Vtxo) -> anyhow::Result<()> {
 		//TODO(stevenroose) should be a transaction but can't do cross-tree txs
 		self.db.open_tree(VTXO_TREE)?.insert(vtxo.id(), vtxo.encode())?;
 		BucketTree::new(self.db.open_tree(VTXO_EXPIRY_TREE)?)

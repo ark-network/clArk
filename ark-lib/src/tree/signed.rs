@@ -9,7 +9,7 @@ use bitcoin::secp256k1::{schnorr, PublicKey, XOnlyPublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 use bitcoin::taproot::{ControlBlock, LeafVersion, TapNodeHash, TaprootBuilder};
 
-use crate::{fee, musig, util, VtxoRequest};
+use crate::{fee, util, VtxoSpec, VtxoRequest};
 use crate::tree::Tree;
 
 
@@ -163,23 +163,18 @@ impl VtxoTreeSpec {
 		}
 	}
 
-	fn exit_clause(&self, vtxo: &VtxoRequest) -> ScriptBuf {
-		let pk = vtxo.pubkey.x_only_public_key().0;
-		util::delayed_sign(self.exit_delta.try_into().unwrap(), pk)
-	}
-
-	fn vtxo_taproot(&self, vtxo: &VtxoRequest) -> taproot::TaprootSpendInfo {
-		let joint_key = musig::combine_keys([vtxo.pubkey, self.asp_key]);
-		TaprootBuilder::new()
-			.add_leaf(0, self.exit_clause(vtxo)).unwrap()
-			.finalize(&util::SECP, joint_key).unwrap()
-	}
-
-	fn vtxo_spk(&self, vtxo: &VtxoRequest) -> ScriptBuf {
-		ScriptBuf::new_v1_p2tr_tweaked(self.vtxo_taproot(vtxo).output_key())
+	fn vtxo_spec(&self, vtxo: &VtxoRequest) -> VtxoSpec {
+		VtxoSpec {
+			user_pubkey: vtxo.pubkey,
+			asp_pubkey: self.asp_key,
+			expiry_height: self.expiry_height,
+			exit_delta: self.exit_delta,
+			amount: vtxo.amount,
+		}
 	}
 
 	fn leaf_tx(&self, vtxo: &VtxoRequest) -> Transaction {
+		let vtxo_spec = self.vtxo_spec(vtxo);
 		Transaction {
 			version: 2,
 			lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -191,7 +186,7 @@ impl VtxoTreeSpec {
 			}],
 			output: vec![
 				TxOut {
-					script_pubkey: self.vtxo_spk(vtxo),
+					script_pubkey: vtxo_spec.exit_spk(),
 					value: vtxo.amount.to_sat(),
 				},
 				fee::dust_anchor(),
@@ -319,6 +314,8 @@ mod test {
 	use bitcoin::hashes::sha256;
 	use bitcoin::secp256k1::{self, rand, KeyPair};
 
+	use crate::musig;
+
 	#[test]
 	fn test_node_tx_sizes() {
 		let secp = secp256k1::Secp256k1::new();
@@ -362,6 +359,10 @@ mod test {
 				let leaf = iter.next().unwrap();
 				assert_eq!(leaf.vsize() as u64, LEAF_TX_VSIZE);
 				for node in iter {
+					assert_eq!(
+						node.input[0].witness.serialized_len(),
+						crate::TAPROOT_KEYSPEND_WEIGHT,
+					);
 					match node.output.len() {
 						2 => {
 							assert_eq!(node.vsize() as u64, NODE2_TX_VSIZE);

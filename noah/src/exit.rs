@@ -17,6 +17,7 @@ const VTXO_CLAIM_INPUT_WEIGHT: usize = 138;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClaimInput {
 	pub utxo: OutPoint,
+	//TODO(stevenroose) check how this is used because for OOR a pseudo spec is stored hre
 	pub spec: VtxoSpec,
 }
 
@@ -40,6 +41,7 @@ impl ClaimInput {
 impl Wallet {
 	/// Exit all vtxo onto the chain.
 	pub async fn start_unilateral_exit(&mut self) -> anyhow::Result<()> {
+		self.onchain.sync().await.context("onchain sync error")?;
 		if let Err(e) = self.sync_ark().await {
 			warn!("Failed to sync incoming Ark payments, still doing exit: {}", e);
 		}
@@ -62,9 +64,9 @@ impl Wallet {
 		'vtxo: for vtxo in vtxos {
 			let id = vtxo.id();
 			match vtxo {
-				Vtxo::Onboard { spec, utxo, reveal_tx_signature } => {
+				Vtxo::Onboard { base, reveal_tx_signature } => {
 					let reveal_tx = ark::onboard::create_reveal_tx(
-						&spec, utxo, Some(&reveal_tx_signature),
+						&base.spec, base.utxo, Some(&reveal_tx_signature),
 					);
 
 					debug!("Broadcasting reveal tx for vtxo {}: {}", id, reveal_tx.txid());
@@ -76,10 +78,10 @@ impl Wallet {
 
 					started.push(id);
 					let utxo = OutPoint::new(reveal_tx.txid(), 0);
-					new_claim_inputs.push(ClaimInput { utxo, spec });
+					new_claim_inputs.push(ClaimInput { utxo, spec: base.spec });
 					fee_anchors.push(OutPoint::new(reveal_tx.txid(), 1));
 				},
-				Vtxo::Round { spec, utxo: _, leaf_idx: _, exit_branch } => {
+				Vtxo::Round { base, exit_branch, .. } => {
 					debug!("Broadcasting {} txs of exit branch for vtxo {}: {:?}",
 						exit_branch.len(), id, exit_branch.iter().map(|t| t.txid()).collect::<Vec<_>>());
 					let mut branch_size = 0;
@@ -96,8 +98,28 @@ impl Wallet {
 					let leaf = exit_branch.last().unwrap();
 					started.push(id);
 					let utxo = OutPoint::new(leaf.txid(), 0);
-					new_claim_inputs.push(ClaimInput { utxo, spec });
+					new_claim_inputs.push(ClaimInput { utxo, spec: base.spec });
 					fee_anchors.push(OutPoint::new(leaf.txid(), 1));
+				},
+				Vtxo::Oor { final_point, ref pseudo_spec, .. } => {
+					//TODO(stevenroose) this is broken! we need to fix this
+					// in signet it will work because of flat feerate,
+					// but this code does not correctly add fee anchor spends
+					// for the vtxo tree leafs in the oor exit path
+
+					let total_exit = vtxo.exit_package();
+					debug!("Broadcasting {} txs of exit branch for OOR vtxo {}: {:?}",
+						total_exit.len(), id, total_exit.iter().map(|t| t.txid()).collect::<Vec<_>>());
+					for tx in &total_exit {
+						if let Err(e) = self.onchain.broadcast_tx(&tx).await {
+							error!("Error broadcasting exit branch tx {} for vtxo {}: {}",
+								tx.txid(), id, e,
+							);
+							continue 'vtxo;
+						}
+					}
+					started.push(id);
+					new_claim_inputs.push(ClaimInput { utxo: final_point, spec: pseudo_spec.clone() });
 				},
 			}
 		}
@@ -123,8 +145,10 @@ impl Wallet {
 		self.db.store_claim_inputs(&claim_inputs).context("db error storing claim inputs")?;
 
 		// Then we'll send a tx that will pay the fee for all the txs we made.
-		let tx = self.onchain.spend_fee_anchors(&fee_anchors, total_size).await?;
-		info!("Sent anchor spend tx: {}", tx.txid());
+		if !fee_anchors.is_empty() { //TODO(stevenroose) can only be empty for broken OOR impl
+			let tx = self.onchain.spend_fee_anchors(&fee_anchors, total_size).await?;
+			info!("Sent anchor spend tx: {}", tx.txid());
+		}
 
 		// After we succesfully stored the claim inputs, we can drop the vtxos.
 		for id in started {

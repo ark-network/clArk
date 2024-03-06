@@ -63,6 +63,8 @@ enum Command {
 		#[arg(long)]
 		bitcoind: Option<String>,
 		#[arg(long)]
+		bitcoind_cookie: Option<PathBuf>,
+		#[arg(long)]
 		bitcoind_user: Option<String>,
 		#[arg(long)]
 		bitcoind_pass: Option<String>,
@@ -82,6 +84,12 @@ enum Command {
 	#[command()]
 	SendOnchain {
 		address: Address<address::NetworkUnchecked>,
+		amount: Amount,
+	},
+	#[command()]
+	SendOor {
+		/// Destination for the payment.
+		destination: String,
 		amount: Amount,
 	},
 	/// Send money through Ark.
@@ -120,7 +128,7 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 			.filter_module("rustls", log::LevelFilter::Off)
 			.filter_module("reqwest", log::LevelFilter::Off)
 			.filter_module("bitcoincore_rpc", log::LevelFilter::Off)
-			.filter_level(log::LevelFilter::Warn);
+			.filter_level(log::LevelFilter::Info);
 	}
 	logbuilder.init();
 
@@ -134,7 +142,8 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 
 	// Handle create command differently.
 	if let Command::Create {
-		force, regtest, signet, mut asp, mut esplora, bitcoind, bitcoind_user, bitcoind_pass,
+		force, regtest, signet, mut asp, mut esplora, bitcoind, bitcoind_cookie, bitcoind_user,
+		bitcoind_pass,
 	} = cli.command {
 		let net = if regtest && !signet {
 			bitcoin::Network::Regtest
@@ -160,6 +169,7 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 			asp_address: asp.context("missing ASP address")?,
 			esplora_address: esplora,
 			bitcoind_address: bitcoind,
+			bitcoind_cookiefile: bitcoind_cookie,
 			bitcoind_user: bitcoind_user,
 			bitcoind_pass: bitcoind_pass,
 		};
@@ -201,6 +211,11 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 			})?;
 			w.send_onchain(addr, amount).await?;
 		},
+		Command::SendOor { destination, amount } => {
+			let pk = PublicKey::from_str(&destination).context("invalid pubkey")?;
+			w.send_oor_payment(pk, amount).await?;
+			info!("Success");
+		},
 		Command::Send { destination, amount } => {
 			if let Ok(pk) = PublicKey::from_str(&destination) {
 				debug!("Sending to Ark public key {}", pk);
@@ -236,10 +251,20 @@ async fn main() {
 
 	if let Err(e) = inner_main(cli).await {
 		eprintln!("An error occurred: {}", e);
+
+		// this is taken from anyhow code because it's not exposed
+		if let Some(cause) = e.source() {
+			eprintln!("Caused by:");
+			for error in anyhow::Chain::new(cause) {
+				eprintln!("	{}", error);
+			}
+		}
+		eprintln!();
+
 		if verbose {
-			// maybe hide second print behind a verbose flag
-			eprintln!("");
-			eprintln!("{:?}", e);
+			eprintln!();
+			eprintln!("Stack backtrace:");
+			eprintln!("{}", e.backtrace());
 		}
 		process::exit(1);
 	}

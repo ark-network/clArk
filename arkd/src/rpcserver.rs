@@ -59,26 +59,6 @@ impl rpc::ArkService for Arc<App> {
 		Ok(tonic::Response::new(ret))
 	}
 
-	async fn request_onboard_cosign(
-		&self,
-		req: tonic::Request<rpc::OnboardCosignRequest>,
-	) -> Result<tonic::Response<rpc::OnboardCosignResponse>, tonic::Status> {
-		let req = req.into_inner();
-		let user_part = ciborium::from_reader::<ark::onboard::UserPart, _>(&req.user_part[..])
-			.map_err(|e| badarg!("invalid user part: {}", e))?;
-		if user_part.spec.asp_pubkey != self.master_key.public_key() {
-			return Err(badarg!("ASP public key is incorrect!"));
-		}
-		let asp_part = self.cosign_onboard(user_part);
-		Ok(tonic::Response::new(rpc::OnboardCosignResponse {
-			asp_part: {
-				let mut buf = Vec::new();
-				ciborium::into_writer(&asp_part, &mut buf).unwrap();
-				buf
-			},
-		}))
-	}
-
 	async fn get_fresh_rounds(
 		&self,
 		req: tonic::Request<rpc::FreshRoundsRequest>,
@@ -104,6 +84,81 @@ impl rpc::ArkService for Arc<App> {
 			signed_vtxos: ret.signed_tree.encode(),
 		}))
 	}
+
+	// onboard
+
+	async fn request_onboard_cosign(
+		&self,
+		req: tonic::Request<rpc::OnboardCosignRequest>,
+	) -> Result<tonic::Response<rpc::OnboardCosignResponse>, tonic::Status> {
+		let req = req.into_inner();
+		let user_part = ciborium::from_reader::<ark::onboard::UserPart, _>(&req.user_part[..])
+			.map_err(|e| badarg!("invalid user part: {}", e))?;
+		if user_part.spec.asp_pubkey != self.master_key.public_key() {
+			return Err(badarg!("ASP public key is incorrect!"));
+		}
+		let asp_part = self.cosign_onboard(user_part);
+		Ok(tonic::Response::new(rpc::OnboardCosignResponse {
+			asp_part: {
+				let mut buf = Vec::new();
+				ciborium::into_writer(&asp_part, &mut buf).unwrap();
+				buf
+			},
+		}))
+	}
+
+	// oor
+
+	async fn request_oor_cosign(
+		&self,
+		req: tonic::Request<rpc::OorCosignRequest>,
+	) -> Result<tonic::Response<rpc::OorCosignResponse>, tonic::Status> {
+		let req = req.into_inner();
+		let payment = ark::oor::OorPayment::decode(&req.payment)
+			.map_err(|e| badarg!("invalid oor payment request: {}", e))?;
+		let user_nonces = req.pub_nonces.into_iter().map(|b| {
+			musig::MusigPubNonce::from_slice(&b)
+				.map_err(|e| badarg!("invalid public nonce: {}", e))
+		}).collect::<Result<Vec<_>, tonic::Status>>()?;
+
+		if payment.inputs.len() != user_nonces.len() {
+			return Err(badarg!("wrong number of user nonces"));
+		}
+
+		let (nonces, sigs) = self.cosign_oor(&payment, &user_nonces).to_status()?;
+		Ok(tonic::Response::new(rpc::OorCosignResponse {
+			pub_nonces: nonces.into_iter().map(|n| n.serialize().to_vec()).collect(),
+			partial_sigs: sigs.into_iter().map(|s| s.serialize().to_vec()).collect(),
+		}))
+	}
+
+	async fn post_oor_mailbox(
+		&self,
+		req: tonic::Request<rpc::OorVtxo>,
+	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
+		let req = req.into_inner();
+		let pubkey = PublicKey::from_slice(&req.pubkey)
+			.map_err(|e| badarg!("invalid pubkey: {}", e))?;
+		let vtxo = Vtxo::decode(&req.vtxo)
+			.map_err(|e| badarg!("invalid vtxo: {}", e))?;
+		self.db.store_oor(pubkey, vtxo).to_status()?;
+		Ok(tonic::Response::new(rpc::Empty {}))
+	}
+
+	async fn empty_oor_mailbox(
+		&self,
+		req: tonic::Request<rpc::OorVtxosRequest>,
+	) -> Result<tonic::Response<rpc::OorVtxosResponse>, tonic::Status> {
+		let req = req.into_inner();
+		let pubkey = PublicKey::from_slice(&req.pubkey)
+			.map_err(|e| badarg!("invalid pubkey: {}", e))?;
+		let vtxos = self.db.pull_oors(pubkey).to_status()?;
+		Ok(tonic::Response::new(rpc::OorVtxosResponse {
+			vtxos: vtxos.into_iter().map(|v| v.encode()).collect(),
+		}))
+	}
+
+	// round
 
 	type SubscribeRoundsStream = Box<
 		dyn Stream<Item = Result<rpc::RoundEvent, tonic::Status>> + Unpin + Send + 'static

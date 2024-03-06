@@ -103,19 +103,24 @@ impl Wallet {
 	}
 
 	/// Fee rate to use for regular txs like onboards.
-	fn regular_fee_rate(&self) -> bdk::FeeRate {
+	fn regular_fee_rate_bdk(&self) -> bdk::FeeRate {
 		//TODO(stevenroose) get from somewhere
 		bdk::FeeRate::from_sat_per_vb(10.0)
 	}
 
+	/// Fee rate to use for regular txs like onboards.
+	pub fn regular_fee_rate(&self) -> bitcoin::FeeRate {
+		bitcoin::FeeRate::from_sat_per_vb(10).unwrap()
+	}
+
 	/// Fee rate to use for urgent txs like exits.
-	fn urgent_fee_rate(&self) -> bdk::FeeRate {
+	fn urgent_fee_rate_bdk(&self) -> bdk::FeeRate {
 		//TODO(stevenroose) get from somewhere
 		bdk::FeeRate::from_sat_per_vb(100.0)
 	}
 
 	pub fn prepare_tx(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Psbt> {
-		let fee_rate = self.regular_fee_rate();
+		let fee_rate = self.regular_fee_rate_bdk();
 		let mut b = self.wallet.build_tx();
 		b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
 		b.add_recipient(dest.script_pubkey(), amount.to_sat());
@@ -180,7 +185,7 @@ impl Wallet {
 		// we will "fake" create an output on the first attempt. This might
 		// overshoot the fee, but we prefer that over undershooting it.
 
-		let urgent_fee_rate = self.urgent_fee_rate();
+		let urgent_fee_rate = self.urgent_fee_rate_bdk();
 		let package_fee = urgent_fee_rate.fee_vb(package_vsize);
 
 		// Since BDK doesn't allow tx without recipients, we add a drain output.
@@ -199,7 +204,7 @@ impl Wallet {
 		};
 
 		let total_vsize = template_size + package_vsize;
-		let total_fee = self.urgent_fee_rate().fee_vb(total_vsize);
+		let total_fee = self.urgent_fee_rate_bdk().fee_vb(total_vsize);
 
 		// Then build actual tx.
 		let mut b = self.wallet.build_tx();
@@ -217,7 +222,7 @@ impl Wallet {
 		assert!(!inputs.is_empty());
 		self.sync().await.context("sync error")?;
 
-		let urgent_fee_rate = self.urgent_fee_rate();
+		let urgent_fee_rate = self.urgent_fee_rate_bdk();
 
 		// Since BDK doesn't allow tx without recipients, we add a drain output.
 		let change_addr = self.wallet.try_get_internal_address(bdk::wallet::AddressIndex::New)?;

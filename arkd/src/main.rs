@@ -47,6 +47,11 @@ enum Command {
 		datadir: PathBuf,
 	},
 	#[command()]
+	DropOorConflicts {
+		#[arg(long)]
+		datadir: PathBuf,
+	},
+	#[command()]
 	Rpc {
 		#[command(subcommand)]
 		cmd: RpcCommand,
@@ -83,6 +88,10 @@ async fn inner_main() -> anyhow::Result<()> {
 	let cli = Cli::parse();
 
 	if let Command::Rpc { cmd, addr } = cli.command {
+		env_logger::builder()
+			.filter_level(log::LevelFilter::Trace)
+			.init();
+
 		return run_rpc(&addr, cmd).await;
 	}
 
@@ -128,8 +137,11 @@ async fn inner_main() -> anyhow::Result<()> {
 		},
 		Command::GetMnemonic { datadir } => {
 			let (app, _jh) = App::start(&datadir).context("starting server")?;
-			println!("{}", app.get_master_mnemonic().await?);
-			process::exit(0);
+			println!("{}", app.get_master_mnemonic()?);
+		},
+		Command::DropOorConflicts { datadir } => {
+			let (app, _jh) = App::start(&datadir).context("starting server")?;
+			app.drop_all_oor_conflicts()?;
 		},
 	}
 
@@ -137,10 +149,6 @@ async fn inner_main() -> anyhow::Result<()> {
 }
 
 async fn run_rpc(addr: &str, cmd: RpcCommand) -> anyhow::Result<()> {
-	env_logger::builder()
-		.filter_level(log::LevelFilter::Trace)
-		.init();
-
 	let asp_endpoint = tonic::transport::Uri::from_str(&format!("http://{}", addr))
 		.context("invalid asp addr")?;
 	let mut asp = rpc::AdminServiceClient::connect(asp_endpoint)

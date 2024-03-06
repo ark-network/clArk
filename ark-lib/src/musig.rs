@@ -117,7 +117,6 @@ pub fn deterministic_partial_sign(
 	msg: [u8; 32],
 	tweak: Option<[u8; 32]>,
 ) -> (MusigPubNonce, MusigPartialSignature) {
-	//TODO(stevenroose) consider taking keypair for efficiency
 	let agg = if let Some(tweak) = tweak {
 		tweaked_key_agg(their_pubkeys.into_iter().chain(Some(my_key.public_key())), tweak).0
 	} else {

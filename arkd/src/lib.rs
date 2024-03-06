@@ -22,9 +22,10 @@ use std::time::Duration;
 use anyhow::Context;
 use bitcoin::{bip32, sighash, psbt, taproot, Amount, Address, OutPoint, Witness};
 use bitcoin::secp256k1::{self, KeyPair};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use ark::util::KeyPairExt;
+use ark::musig;
 
 use crate::psbtext::{PsbtInputExt, RoundMeta};
 use crate::round::{RoundEvent, RoundInput};
@@ -78,6 +79,10 @@ pub struct App {
 	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
 	
+	/// Whenever a round is going on, this lock will be held.
+	/// This helps us schedule tasks like db cleanups without
+	/// interfering with rounds.
+	round_busy: Arc<RwLock<()>>,
 	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
 	round_input_tx: tokio::sync::mpsc::UnboundedSender<RoundInput>,
 }
@@ -165,6 +170,7 @@ impl App {
 			wallet: Mutex::new(wallet),
 			bitcoind: bitcoind,
 
+			round_busy: Arc::new(RwLock::new(())),
 			round_event_tx: round_event_tx,
 			round_input_tx: round_input_tx,
 		});
@@ -182,10 +188,6 @@ impl App {
 		});
 
 		Ok((ret, jh))
-	}
-
-	pub async fn get_master_mnemonic(&self) -> anyhow::Result<String> {
-		Ok(self.db.get_master_mnemonic()?.expect("app running"))
 	}
 
 	pub async fn onchain_address(&self) -> anyhow::Result<Address> {
@@ -224,6 +226,21 @@ impl App {
 	pub fn cosign_onboard(&self, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {
 		info!("Cosigning onboard request for utxo {}", user_part.utxo);
 		ark::onboard::new_asp(&user_part, &self.master_key)
+	}
+
+	pub fn cosign_oor(
+		&self,
+		payment: &ark::oor::OorPayment,
+		user_nonces: &[musig::MusigPubNonce],
+	) -> anyhow::Result<(Vec<musig::MusigPubNonce>, Vec<musig::MusigPartialSignature>)> {
+		let ids = payment.inputs.iter().map(|v| v.id()).collect::<Vec<_>>();
+		if let Some(dup) = self.db.atomic_check_mark_oors_cosigned(ids.iter().copied())? {
+			bail!("attempted to double sign OOR for vtxo {}", dup)
+		} else {
+			info!("Cosigning OOR tx with inputs: {:?}", ids);
+			let (nonces, sigs) = payment.sign_asp(&self.master_key, &user_nonces);
+			Ok((nonces, sigs))
+		}
 	}
 
 	/// Returns a set of UTXOs from previous rounds that can be spent.
@@ -321,6 +338,16 @@ impl App {
 		}
 
 		Ok(())
+	}
+
+	// ** SOME ADMIN COMMANDS **
+
+	pub fn get_master_mnemonic(&self) -> anyhow::Result<String> {
+		Ok(self.db.get_master_mnemonic()?.expect("app running"))
+	}
+
+	pub fn drop_all_oor_conflicts(&self) -> anyhow::Result<()> {
+		self.db.clear_oor_cosigned()
 	}
 }
 

@@ -11,7 +11,7 @@ mod psbtext;
 
 use std::{fs, iter};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{bail, Context};
@@ -20,7 +20,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{rand, KeyPair, PublicKey};
 use tokio_stream::StreamExt;
 
-use ark::{musig, OffboardRequest, VtxoRequest, Vtxo, VtxoId, VtxoSpec};
+use ark::{musig, BaseVtxo, OffboardRequest, VtxoRequest, Vtxo, VtxoId, VtxoSpec};
 use ark::connectors::ConnectorChain;
 use ark::tree::signed::{SignedVtxoTree, VtxoTreeSpec};
 use arkd_rpc_client as rpc;
@@ -60,6 +60,11 @@ pub struct Config {
 	/// Either this or the `esplora_address` field has to be provided.
 	pub bitcoind_address: Option<String>,
 
+	/// The path to the bitcoind rpc cookie file.
+	///
+	/// Only used with `bitcoind_address`.
+	pub bitcoind_cookiefile: Option<PathBuf>,
+
 	/// The bitcoind RPC username.
 	///
 	/// Only used with `bitcoind_address`.
@@ -78,6 +83,7 @@ impl Default for Config {
 			asp_address: "127.0.0.1:3535".parse().unwrap(),
 			esplora_address: None,
 			bitcoind_address: None,
+			bitcoind_cookiefile: None,
 			bitcoind_user: None,
 			bitcoind_pass: None,
 		}
@@ -150,10 +156,17 @@ impl Wallet {
 				url: url.clone(),
 			}
 		} else if let Some(ref url) = config.bitcoind_address {
+			let auth = if let Some(ref c) = config.bitcoind_cookiefile {
+				bdk_bitcoind_rpc::bitcoincore_rpc::Auth::CookieFile(c.clone())
+			} else {
+				bdk_bitcoind_rpc::bitcoincore_rpc::Auth::UserPass(
+					config.bitcoind_user.clone().context("need bitcoind auth config")?,
+					config.bitcoind_pass.clone().context("need bitcoind auth config")?,
+				)
+			};
 			onchain::ChainSource::Bitcoind {
 				url: url.clone(),
-				user: config.bitcoind_user.clone().context("need bitcoind_user config")?,
-				pass: config.bitcoind_pass.clone().context("need bitcoind_pass config")?,
+				auth: auth,
 			}
 		} else {
 			bail!("Need to either provide esplora or bitcoind info");
@@ -261,7 +274,7 @@ impl Wallet {
 
 		// Store vtxo first before we actually make the on-chain tx.
 		let vtxo = ark::onboard::finish(user_part, asp_part, priv_user_part, &key); 
-		self.db.store_vtxo(vtxo).context("db error storing vtxo")?;
+		self.db.store_vtxo(&vtxo).context("db error storing vtxo")?;
 
 		let tx = self.onchain.finish_tx(onboard_tx)?;
 		trace!("Broadcasting onboard tx: {}", bitcoin::consensus::encode::serialize_hex(&tx));
@@ -280,14 +293,16 @@ impl Wallet {
 		let exit_branch = vtxos.exit_branch(leaf_idx).unwrap();
 		let dest = &vtxos.spec.vtxos[leaf_idx];
 		let vtxo = Vtxo::Round {
-			spec: VtxoSpec {
-				user_pubkey: dest.pubkey,
-				asp_pubkey: self.ark_info.asp_pubkey,
-				expiry_height: vtxos.spec.expiry_height,
-				exit_delta: vtxos.spec.exit_delta,
-				amount: dest.amount,
+			base: BaseVtxo {
+				spec: VtxoSpec {
+					user_pubkey: dest.pubkey,
+					asp_pubkey: self.ark_info.asp_pubkey,
+					expiry_height: vtxos.spec.expiry_height,
+					exit_delta: vtxos.spec.exit_delta,
+					amount: dest.amount,
+				},
+				utxo: vtxos.utxo,
 			},
-			utxo: vtxos.utxo,
 			leaf_idx: leaf_idx,
 			exit_branch: exit_branch,
 		};
@@ -297,9 +312,9 @@ impl Wallet {
 			return Ok(());
 		}
 
-		if self.db.get_vtxo(vtxo.id()).ok().flatten().is_none() {
+		if self.db.get_vtxo(vtxo.id())?.is_none() {
 			debug!("Storing new vtxo {} with value {}", vtxo.id(), vtxo.spec().amount);
-			self.db.store_vtxo(vtxo).context("failed to store vtxo")?;
+			self.db.store_vtxo(&vtxo).context("failed to store vtxo")?;
 		}
 		Ok(())
 	}
@@ -336,6 +351,26 @@ impl Wallet {
 
 		self.db.store_last_ark_sync_height(current_height)?;
 
+		// Then sync OOR vtxos.
+		debug!("Emptying OOR mailbox at ASP...");
+		let req = rpc::OorVtxosRequest { pubkey: vtxo_key.public_key().serialize().to_vec() };
+		let resp = self.asp.empty_oor_mailbox(req).await.context("error fetching oors")?;
+		let oors = resp.into_inner().vtxos.into_iter()
+			.map(|b| Vtxo::decode(&b).context("invalid vtxo from asp"))
+			.collect::<Result<Vec<_>, _>>()?;
+		debug!("ASP has {} OOR vtxos for us", oors.len());
+		for vtxo in oors {
+			// Not sure if this can happen, but well.
+			if self.db.has_forfeited_vtxo(vtxo.id())? {
+				debug!("Not adding OOR vtxo {} because we previously forfeited it", vtxo.id());
+			}
+
+			if self.db.get_vtxo(vtxo.id())?.is_none() {
+				debug!("Storing new OOR vtxo {} with value {}", vtxo.id(), vtxo.spec().amount);
+				self.db.store_vtxo(&vtxo).context("failed to store OOR vtxo")?;
+			}
+		}
+
 		Ok(())
 	}
 
@@ -344,7 +379,9 @@ impl Wallet {
 	}
 
 	pub async fn offboard_all(&mut self) -> anyhow::Result<()> {
+		let _ = self.onchain.sync().await;
 		self.sync_ark().await.context("failed to sync with ark")?;
+
 		let input_vtxos = self.db.get_all_vtxos()?;
 		let vtxo_sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 		let addr = self.onchain.new_address()?;
@@ -361,6 +398,117 @@ impl Wallet {
 		Ok(())
 	}
 
+	pub async fn send_oor_payment(&mut self, destination: PublicKey, amount: Amount) -> anyhow::Result<VtxoId> {
+		self.sync_ark().await.context("failed to sync with ark")?;
+
+		let fr = self.onchain.regular_fee_rate();
+		//TODO(stevenroose) impl key derivation
+		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
+		let output = VtxoRequest { pubkey: destination, amount };
+
+		// We do some kind of naive fee estimation: we try create a tx,
+		// if we don't have enough fee, we add the fee we were short to
+		// the desired input amount and try again.
+		let mut account_for_fee = ark::oor::OOR_MIN_FEE;
+		let payment = loop {
+			let input_vtxos = self.db.get_expiring_vtxos(amount + account_for_fee)?;
+			let change = {
+				let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
+				let avail = Amount::from_sat(sum.to_sat().saturating_sub(account_for_fee.to_sat()));
+				if avail < output.amount {
+					bail!("Balance too low: {}", sum);
+				} else if avail < output.amount + ark::P2TR_DUST {
+					info!("No change, emptying wallet.");
+					None
+				} else {
+					let change_amount = avail - output.amount;
+					info!("Adding change vtxo for {}", change_amount);
+					Some(VtxoRequest {
+						pubkey: vtxo_key.public_key(),
+						amount: change_amount,
+					})
+				}
+			};
+			let outputs = Some(output.clone()).into_iter().chain(change).collect::<Vec<_>>();
+
+			let payment = ark::oor::OorPayment::new(
+				self.ark_info.asp_pubkey,
+				self.ark_info.vtxo_exit_delta,
+				input_vtxos,
+				outputs,
+			);
+
+			if let Err(ark::oor::InsufficientFunds { fee, .. }) = payment.check_fee(fr) {
+				account_for_fee += fee;
+			} else {
+				break payment;
+			}
+		};
+		trace!("OOR tx sighashes: {:?}", payment.sighashes());
+
+		let (sec_nonces, pub_nonces) = {
+			let mut secs = Vec::with_capacity(payment.inputs.len());
+			let mut pubs = Vec::with_capacity(payment.inputs.len());
+			for _ in 0..payment.inputs.len() {
+				let (s, p) = musig::nonce_pair(&vtxo_key);
+				secs.push(s);
+				pubs.push(p);
+			}
+			(secs, pubs)
+		};
+
+		let req = rpc::OorCosignRequest {
+			payment: payment.encode(),
+			pub_nonces: pub_nonces.iter().map(|n| n.serialize().to_vec()).collect(),
+		};
+		let resp = self.asp.request_oor_cosign(req).await.context("cosign request failed")?.into_inner();
+		let len = payment.inputs.len();
+		if resp.pub_nonces.len() != len || resp.partial_sigs.len() != len {
+			bail!("invalid length of asp response");
+		}
+
+		let asp_pub_nonces = resp.pub_nonces.into_iter().map(|b| {
+			musig::MusigPubNonce::from_slice(&b)
+		}).collect::<Result<Vec<_>, _>>().context("invalid asp pub nonces")?;
+		let asp_part_sigs = resp.partial_sigs.into_iter().map(|b| {
+			musig::MusigPartialSignature::from_slice(&b)
+		}).collect::<Result<Vec<_>, _>>().context("invalid asp part sigs")?;
+
+		trace!("OOR prevouts: {:?}", payment.inputs.iter().map(|i| i.txout()).collect::<Vec<_>>());
+		let tx = payment.sign_finalize_user(
+			&vtxo_key,
+			sec_nonces,
+			&pub_nonces,
+			&asp_pub_nonces,
+			&asp_part_sigs,
+		);
+		trace!("OOR tx: {}", bitcoin::consensus::encode::serialize_hex(&tx.signed_transaction()));
+		let vtxos = tx.output_vtxos(self.ark_info.asp_pubkey, self.ark_info.vtxo_exit_delta);
+
+		// The first one is of the recipient, we will post it to their
+		// mailbox.
+		// TODO(stevenroose) in the future we will use nostr for this or something
+		let user_vtxo = &vtxos[0];
+		let req = rpc::OorVtxo {
+			pubkey: destination.serialize().to_vec(),
+			vtxo: user_vtxo.encode(),
+		};
+		if let Err(e) = self.asp.post_oor_mailbox(req).await {
+			//TODO(stevenroose) print vtxo in hex after btc fixed hex
+			error!("Failed to post the OOR vtxo to the recipients mailbox: {}", e);
+			//NB we will continue to at least not lose our own change
+		}
+
+		if let Some(change_vtxo) = vtxos.get(1) {
+			if let Err(e) = self.db.store_vtxo(change_vtxo) {
+				//TODO(stevenroose) print vtxo in hex after btc fixed hex
+				error!("Failed to store change vtxo from OOR tx: {}", e);
+			}
+		}
+
+		Ok(user_vtxo.id())
+	}
+
 	pub async fn send_ark_payment(&mut self, destination: PublicKey, amount: Amount) -> anyhow::Result<()> {
 		//TODO(stevenroose) impl key derivation
 		let vtxo_key = self.vtxo_seed.to_keypair(&SECP);
@@ -369,10 +517,10 @@ impl Wallet {
 		self.sync_ark().await.context("failed to sync with ark")?;
 		let payment = VtxoRequest { pubkey: destination, amount };
 		let input_vtxos = self.db.get_expiring_vtxos(amount)?;
-		let change = {
+		let change = { //TODO(stevenroose) account dust
 			let sum = input_vtxos.iter().map(|v| v.amount()).sum::<Amount>();
 			if sum < payment.amount {
-				bail!("Balance too low");
+				bail!("Balance too low: {}", sum);
 			} else if sum == payment.amount {
 				info!("No change, emptying wallet.");
 				None

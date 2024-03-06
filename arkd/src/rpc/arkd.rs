@@ -16,19 +16,6 @@ pub struct ArkInfo {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OnboardCosignRequest {
-    /// / Serialized `UserPart`
-    #[prost(bytes = "vec", tag = "1")]
-    pub user_part: ::prost::alloc::vec::Vec<u8>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OnboardCosignResponse {
-    #[prost(bytes = "vec", tag = "1")]
-    pub asp_part: ::prost::alloc::vec::Vec<u8>,
-}
-#[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FreshRoundsRequest {
     #[prost(uint32, tag = "1")]
     pub start_height: u32,
@@ -52,6 +39,55 @@ pub struct RoundInfo {
     pub round_tx: ::prost::alloc::vec::Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub signed_vtxos: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OnboardCosignRequest {
+    /// / Serialized `UserPart`
+    #[prost(bytes = "vec", tag = "1")]
+    pub user_part: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OnboardCosignResponse {
+    #[prost(bytes = "vec", tag = "1")]
+    pub asp_part: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorCosignRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub payment: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorCosignResponse {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub pub_nonces: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", repeated, tag = "2")]
+    pub partial_sigs: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorVtxo {
+    #[prost(bytes = "vec", tag = "1")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub vtxo: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorVtxosRequest {
+    #[prost(bytes = "vec", tag = "1")]
+    pub pubkey: ::prost::alloc::vec::Vec<u8>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OorVtxosResponse {
+    #[prost(bytes = "vec", repeated, tag = "1")]
+    pub vtxos: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -210,13 +246,6 @@ pub mod ark_service_server {
             &self,
             request: tonic::Request<super::Empty>,
         ) -> std::result::Result<tonic::Response<super::ArkInfo>, tonic::Status>;
-        async fn request_onboard_cosign(
-            &self,
-            request: tonic::Request<super::OnboardCosignRequest>,
-        ) -> std::result::Result<
-            tonic::Response<super::OnboardCosignResponse>,
-            tonic::Status,
-        >;
         async fn get_fresh_rounds(
             &self,
             request: tonic::Request<super::FreshRoundsRequest>,
@@ -225,6 +254,33 @@ pub mod ark_service_server {
             &self,
             request: tonic::Request<super::RoundId>,
         ) -> std::result::Result<tonic::Response<super::RoundInfo>, tonic::Status>;
+        /// * ONBOARDING *
+        async fn request_onboard_cosign(
+            &self,
+            request: tonic::Request<super::OnboardCosignRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::OnboardCosignResponse>,
+            tonic::Status,
+        >;
+        /// * OOR PAYMENTS*
+        async fn request_oor_cosign(
+            &self,
+            request: tonic::Request<super::OorCosignRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::OorCosignResponse>,
+            tonic::Status,
+        >;
+        async fn post_oor_mailbox(
+            &self,
+            request: tonic::Request<super::OorVtxo>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status>;
+        async fn empty_oor_mailbox(
+            &self,
+            request: tonic::Request<super::OorVtxosRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::OorVtxosResponse>,
+            tonic::Status,
+        >;
         /// Server streaming response type for the SubscribeRounds method.
         type SubscribeRoundsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::RoundEvent, tonic::Status>,
@@ -375,53 +431,6 @@ pub mod ark_service_server {
                     };
                     Box::pin(fut)
                 }
-                "/arkd.ArkService/RequestOnboardCosign" => {
-                    #[allow(non_camel_case_types)]
-                    struct RequestOnboardCosignSvc<T: ArkService>(pub Arc<T>);
-                    impl<
-                        T: ArkService,
-                    > tonic::server::UnaryService<super::OnboardCosignRequest>
-                    for RequestOnboardCosignSvc<T> {
-                        type Response = super::OnboardCosignResponse;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::Response>,
-                            tonic::Status,
-                        >;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<super::OnboardCosignRequest>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move {
-                                <T as ArkService>::request_onboard_cosign(&inner, request)
-                                    .await
-                            };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let inner = inner.0;
-                        let method = RequestOnboardCosignSvc(inner);
-                        let codec = tonic::codec::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
                 "/arkd.ArkService/GetFreshRounds" => {
                     #[allow(non_camel_case_types)]
                     struct GetFreshRoundsSvc<T: ArkService>(pub Arc<T>);
@@ -497,6 +506,189 @@ pub mod ark_service_server {
                     let fut = async move {
                         let inner = inner.0;
                         let method = GetRoundSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/RequestOnboardCosign" => {
+                    #[allow(non_camel_case_types)]
+                    struct RequestOnboardCosignSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::OnboardCosignRequest>
+                    for RequestOnboardCosignSvc<T> {
+                        type Response = super::OnboardCosignResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::OnboardCosignRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::request_onboard_cosign(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = RequestOnboardCosignSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/RequestOorCosign" => {
+                    #[allow(non_camel_case_types)]
+                    struct RequestOorCosignSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::OorCosignRequest>
+                    for RequestOorCosignSvc<T> {
+                        type Response = super::OorCosignResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::OorCosignRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::request_oor_cosign(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = RequestOorCosignSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/PostOorMailbox" => {
+                    #[allow(non_camel_case_types)]
+                    struct PostOorMailboxSvc<T: ArkService>(pub Arc<T>);
+                    impl<T: ArkService> tonic::server::UnaryService<super::OorVtxo>
+                    for PostOorMailboxSvc<T> {
+                        type Response = super::Empty;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::OorVtxo>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::post_oor_mailbox(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = PostOorMailboxSvc(inner);
+                        let codec = tonic::codec::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/arkd.ArkService/EmptyOorMailbox" => {
+                    #[allow(non_camel_case_types)]
+                    struct EmptyOorMailboxSvc<T: ArkService>(pub Arc<T>);
+                    impl<
+                        T: ArkService,
+                    > tonic::server::UnaryService<super::OorVtxosRequest>
+                    for EmptyOorMailboxSvc<T> {
+                        type Response = super::OorVtxosResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::OorVtxosRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as ArkService>::empty_oor_mailbox(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let inner = inner.0;
+                        let method = EmptyOorMailboxSvc(inner);
                         let codec = tonic::codec::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -4,16 +4,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
-use bitcoin::{Amount, OutPoint, Transaction, Txid};
+use bitcoin::{Amount, Transaction, Txid};
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::schnorr;
+use bitcoin::secp256k1::{schnorr, PublicKey};
 use rocksdb::{
 	BoundColumnFamily, FlushOptions, OptimisticTransactionOptions, WriteBatchWithTransaction,
 	WriteOptions,
 };
 
 
-use ark::{VtxoId, VtxoSpec};
+use ark::{VtxoId, Vtxo};
 use ark::tree::signed::SignedVtxoTree;
 
 
@@ -25,6 +25,10 @@ const CF_FORFEIT_VTXO: &str = "forfeited_vtxos";
 const CF_ROUND: &str = "rounds";
 /// set [expiry][txid]
 const CF_ROUND_EXPIRY: &str = "rounds_by_expiry";
+/// set [outpoint]
+const CF_OOR_COSIGNED: &str = "oor_cosign";
+/// set [pubkey][vtxo]
+const CF_OOR_MAILBOX: &str = "oor_mailbox";
 
 // ROOT ENTRY KEYS
 
@@ -34,36 +38,18 @@ const MASTER_MNEMONIC: &str = "master_mnemonic";
 
 /// A vtxo that has been forfeited and is now ours.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum ForfeitVtxo {
-	//TODO(stevenroose) for the forfeit sigs to make sense here, they need to include the round id
-	//that they were spent in so that the connectors can be found!
-	Onboard {
-		spec: VtxoSpec,
-		utxo: OutPoint,
-		forfeit_sigs: Vec<schnorr::Signature>,
-	},
-	Round {
-		spec: VtxoSpec,
-		round_id: Txid,
-		point: OutPoint,
-		leaf_idx: usize,
-		forfeit_sigs: Vec<schnorr::Signature>,
-	},
+pub struct ForfeitVtxo {
+	pub vtxo: Vtxo,
+	pub forfeit_sigs: Vec<schnorr::Signature>,
 }
 
 impl ForfeitVtxo {
 	pub fn id(&self) -> VtxoId {
-		match self {
-			Self::Onboard { utxo, .. } => (*utxo).into(),
-			Self::Round { point, .. } => (*point).into(),
-		}
+		self.vtxo.id()
 	}
 
 	pub fn amount(&self) -> Amount {
-		match self {
-			Self::Onboard { spec, .. } => spec.amount,
-			Self::Round { spec, .. } => spec.amount,
-		}
+		self.vtxo.amount()
 	}
 
 	fn encode(&self) -> Vec<u8> {
@@ -141,7 +127,7 @@ impl Db {
 		opts.create_if_missing(true);
 		opts.create_missing_column_families(true);
 
-		let cfs = [CF_FORFEIT_VTXO, CF_ROUND, CF_ROUND_EXPIRY];
+		let cfs = [CF_FORFEIT_VTXO, CF_ROUND, CF_ROUND_EXPIRY, CF_OOR_COSIGNED, CF_OOR_MAILBOX];
 		let db = rocksdb::OptimisticTransactionDB::open_cf(&opts, path, cfs)
 			.context("failed to open db")?;
 		Ok(Db { db })
@@ -157,6 +143,14 @@ impl Db {
 
 	fn cf_round_expiry<'a>(&'a self) -> Arc<BoundColumnFamily<'a>> {
 		self.db.cf_handle(CF_ROUND_EXPIRY).expect("db missing round expiry cf")
+	}
+
+	fn cf_oor_cosigned<'a>(&'a self) -> Arc<BoundColumnFamily<'a>> {
+		self.db.cf_handle(CF_OOR_COSIGNED).expect("db missing oor cosigned cf")
+	}
+
+	fn cf_oor_mailbox<'a>(&'a self) -> Arc<BoundColumnFamily<'a>> {
+		self.db.cf_handle(CF_OOR_MAILBOX).expect("db missing oor mailbox cf")
 	}
 
 	pub fn store_master_mnemonic_and_seed(&self, mnemonic: &bip39::Mnemonic) -> anyhow::Result<()> {
@@ -290,6 +284,83 @@ impl Db {
 	pub fn store_forfeit_vtxo(&self, vtxo: ForfeitVtxo) -> anyhow::Result<()> {
 		self.db.put_cf(&self.cf_forfeit_vtxo(), vtxo.id(), vtxo.encode())?;
 		Ok(())
+	}
+
+	/// Returns [None] if all the ids were not previously marked as signed
+	/// and are now correctly marked as such.
+	/// Returns [Some] for the first vtxo that was already signed.
+	///
+	/// This is atomic so that a user can't try to make us double sign by firing
+	/// multiple cosign requests at the same time.
+	pub fn atomic_check_mark_oors_cosigned(
+		&self,
+		ids: impl Iterator<Item = VtxoId> + Clone,
+	) -> anyhow::Result<Option<VtxoId>> {
+		let opts = WriteOptions::default();
+		let oopts = OptimisticTransactionOptions::new();
+
+		//TODO(stevenroose) consider writing a macro for this sort of block
+		loop {
+			let tx = self.db.transaction_opt(&opts, &oopts);
+
+			for id in ids.clone() {
+				if tx.get_cf(&self.cf_oor_cosigned(), id)?.is_some() {
+					tx.rollback()?;
+					return Ok(Some(id));
+				}
+				tx.put_cf(&self.cf_round(), id, [])?;
+			}
+
+			match tx.commit() {
+				Ok(()) => break,
+				Err(e) if e.kind() == rocksdb::ErrorKind::TryAgain => continue,
+				Err(e) if e.kind() == rocksdb::ErrorKind::Busy => continue,
+				Err(e) => bail!("failed to commit db tx: {}", e),
+			}
+		}
+		Ok(None)
+	}
+
+	pub fn clear_oor_cosigned(&self) -> anyhow::Result<()> {
+		self.db.drop_cf(CF_OOR_COSIGNED)?;
+
+		let mut opts = rocksdb::Options::default();
+		opts.create_if_missing(true);
+		opts.create_missing_column_families(true);
+		self.db.create_cf(CF_OOR_COSIGNED, &opts)?;
+		Ok(())
+	}
+
+	pub fn store_oor(&self, pubkey: PublicKey, vtxo: Vtxo) -> anyhow::Result<()> {
+		let mut buf = Vec::new();
+		buf.extend(pubkey.serialize());
+		vtxo.encode_into(&mut buf);
+		self.db.put_cf(&self.cf_oor_mailbox(), buf, [])?;
+		Ok(())
+	}
+
+	pub fn pull_oors(&self, pubkey: PublicKey) -> anyhow::Result<Vec<Vtxo>> {
+		let pk = pubkey.serialize();
+		assert_eq!(33, pk.len());
+
+		let mut ret = Vec::new();
+		let mut iter = self.db.raw_iterator_cf(&self.cf_oor_mailbox());
+		iter.seek(&pk);
+		while iter.valid() {
+			if let Some(item) = iter.key() {
+				if item[0..33] == pk {
+					ret.push(Vtxo::decode(&item[33..]).expect("corrupt db: invalid vtxo"));
+					self.db.delete_cf(&self.cf_oor_mailbox(), &item)?;
+				} else {
+					break;
+				}
+				iter.next();
+			} else {
+				break;
+			}
+		}
+		iter.status().context("round expiry iterator error")?;
+		Ok(ret)
 	}
 }
 

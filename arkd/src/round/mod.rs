@@ -168,6 +168,7 @@ pub async fn run_round_scheduler(
 			}
 		}
 
+		let _ = app.round_busy.write().await;
 		let round_id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() /
 			cfg.round_interval.as_secs();
 		info!("Starting round {}", round_id);
@@ -589,16 +590,8 @@ pub async fn run_round_scheduler(
 			for (id, vtxo) in all_inputs {
 				let forfeit_sigs = forfeit_sigs.remove(&id).unwrap();
 				let point = vtxo.point();
-				let ff = match vtxo {
-					Vtxo::Onboard { utxo, spec, .. } => {
-						ForfeitVtxo::Onboard { spec, utxo, forfeit_sigs }
-					},
-					Vtxo::Round { spec, leaf_idx, .. } => {
-						ForfeitVtxo::Round { spec, round_id, point, leaf_idx, forfeit_sigs }
-					},
-				};
 				trace!("Storing forfeit vtxo for vtxo {}", point);
-				app.db.store_forfeit_vtxo(ff)?;
+				app.db.store_forfeit_vtxo(ForfeitVtxo { vtxo, forfeit_sigs })?;
 			}
 
 			trace!("Storing round result");

@@ -10,8 +10,7 @@ const TX_ALREADY_IN_CHAIN_ERROR: i32 = -27;
 pub enum ChainSource {
 	Bitcoind {
 		url: String,
-		user: String,
-		pass: String,
+		auth: bitcoincore_rpc::Auth,
 	},
 	Esplora {
 		url: String,
@@ -26,10 +25,9 @@ pub enum ChainSourceClient {
 impl ChainSourceClient {
 	pub fn new(chain_source: ChainSource) -> anyhow::Result<Self> {
 		Ok(match chain_source {
-			ChainSource::Bitcoind { url, user, pass } => ChainSourceClient::Bitcoind(
-				bitcoincore_rpc::Client::new(
-					&url, bitcoincore_rpc::Auth::UserPass(user, pass),
-				).context("failed to create bitcoind rpc client")?
+			ChainSource::Bitcoind { url, auth } => ChainSourceClient::Bitcoind(
+				bitcoincore_rpc::Client::new(&url, auth)
+					.context("failed to create bitcoind rpc client")?
 			),
 			ChainSource::Esplora { url } => ChainSourceClient::Esplora(
 				esplora_client::Builder::new(&url).build_async()

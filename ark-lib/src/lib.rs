@@ -352,6 +352,28 @@ impl Vtxo {
 		}
 	}
 
+	/// Splits this vtxo in a set of non-OOR vtxos and the attached OOR txs.
+	pub fn split_oor(&self) -> (Vec<&Vtxo>, Vec<Transaction>) {
+		//TODO(stevenroose) this impls does allocations for each level of recursion
+		// it would be nice if we could optimize that somehow eventually
+
+		match self {
+			Vtxo::Onboard { .. } => (vec![self], vec![]),
+			Vtxo::Round { .. } => (vec![self], vec![]),
+			Vtxo::Oor { ref inputs, oor_tx, .. } => {
+				let mut ret_bases = Vec::with_capacity(inputs.len());
+				let mut ret_oors = Vec::with_capacity(1);
+				for input in inputs {
+					let (bases, oors) = input.split_oor();
+					ret_bases.extend(bases);
+					ret_oors.extend(oors);
+				}
+				ret_oors.push(oor_tx.clone());
+				(ret_bases, ret_oors)
+			},
+		}
+	}
+
 	pub fn is_onboard(&self) -> bool {
 		match self {
 			Vtxo::Onboard { .. } => true,

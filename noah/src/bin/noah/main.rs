@@ -13,6 +13,7 @@ use clap::Parser;
 
 use noah::{Wallet, Config};
 
+const SIGNET_ASP_CERT: &'static [u8] = include_bytes!("signet.asp.21m.dev.cert.pem");
 
 fn default_datadir() -> String {
 	home::home_dir().or_else(|| {
@@ -26,10 +27,10 @@ fn default_datadir() -> String {
 #[command(author = "Steven Roose <steven@roose.io>", version, about)]
 struct Cli {
 	/// Enable verbose logging.
-	#[arg(long, short = 'v')]
+	#[arg(long, short = 'v', global = true)]
 	verbose: bool,
 	/// The datadir of the noah wallet.
-	#[arg(long, default_value_t = default_datadir())]
+	#[arg(long, global = true, default_value_t = default_datadir())]
 	datadir: String,
 	#[command(subcommand)]
 	command: Command,
@@ -56,6 +57,8 @@ enum Command {
 
 		#[arg(long)]
 		asp: Option<String>,
+		#[arg(long)]
+		asp_cert: Option<String>,
 
 		/// The esplora HTTP API endpoint.
 		#[arg(long)]
@@ -142,7 +145,7 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 
 	// Handle create command differently.
 	if let Command::Create {
-		force, regtest, signet, mut asp, mut esplora, bitcoind, bitcoind_cookie, bitcoind_user,
+		force, regtest, signet, mut asp, asp_cert, mut esplora, bitcoind, bitcoind_cookie, bitcoind_user,
 		bitcoind_pass,
 	} = cli.command {
 		let net = if regtest && !signet {
@@ -153,10 +156,16 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 			bail!("Need to user either --signet and --regtest");
 		};
 
+		let mut asp_cert = asp_cert.map(|p|
+			fs::read(p).context("failed to read ASP cert file")
+		).transpose()?;
+
 		if signet {
 			if asp.is_none() {
-				//TODO(stevenroose) fill in our signet asp
-				asp = Some("TODO(stevenroose) fill in our signet asp".into());
+				asp = Some("https://signet.asp.21m.dev:35035".into());
+				if asp_cert.is_none() {
+					asp_cert = Some(SIGNET_ASP_CERT.to_vec());
+				}
 			}
 			if esplora.is_none() && bitcoind.is_none() {
 				esplora = Some("http://signet.21m.dev:3003".into());
@@ -167,6 +176,7 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 		let cfg = Config {
 			network: net,
 			asp_address: asp.context("missing ASP address")?,
+			asp_cert: None,
 			esplora_address: esplora,
 			bitcoind_address: bitcoind,
 			bitcoind_cookiefile: bitcoind_cookie,
@@ -179,7 +189,7 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 		}
 
 		fs::create_dir_all(&datadir).context("failed to create datadir")?;
-		let mut w = Wallet::create(&datadir, cfg).await.context("error creating wallet")?;
+		let mut w = Wallet::create(&datadir, cfg, asp_cert).await.context("error creating wallet")?;
 		info!("Onchain address: {}", w.get_new_onchain_address()?);
 		return Ok(());
 	}

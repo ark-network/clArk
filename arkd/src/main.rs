@@ -13,17 +13,19 @@ use clap::Parser;
 use arkd::{App, Config};
 use arkd_rpc_client as rpc;
 
+const RPC_ADDR: &str = "[::]:35035";
+
 #[derive(Parser)]
 #[command(author = "Steven Roose <steven@roose.io>", version, about)]
 struct Cli {
+	#[arg(long, global = true)]
+	datadir: Option<PathBuf>,
 	#[command(subcommand)]
 	command: Command,
 }
 
 #[derive(clap::Args)]
 struct CreateOpts {
-	#[arg(long)]
-	datadir: PathBuf,
 	#[arg(long, default_value = "regtest")]
 	network: Network,
 	#[arg(long)]
@@ -37,20 +39,11 @@ enum Command {
 	#[command()]
 	Create(CreateOpts),
 	#[command()]
-	Start {
-		#[arg(long)]
-		datadir: PathBuf,
-	},
+	Start,
 	#[command()]
-	GetMnemonic {
-		#[arg(long)]
-		datadir: PathBuf,
-	},
+	GetMnemonic,
 	#[command()]
-	DropOorConflicts {
-		#[arg(long)]
-		datadir: PathBuf,
-	},
+	DropOorConflicts,
 	#[command()]
 	Rpc {
 		#[command(subcommand)]
@@ -70,8 +63,6 @@ enum RpcCommand {
 	#[command()]
 	Stop,
 }
-
-const RPC_ADDR: &str = "[::1]:35035";
 
 #[tokio::main]
 async fn main() {
@@ -97,6 +88,7 @@ async fn inner_main() -> anyhow::Result<()> {
 
 	env_logger::builder()
 		.filter_module("bitcoincore_rpc", log::LevelFilter::Warn)
+		.filter_module("rustls", log::LevelFilter::Warn)
 		.filter_level(log::LevelFilter::Trace)
 		.init();
 
@@ -104,7 +96,7 @@ async fn inner_main() -> anyhow::Result<()> {
 		Command::Rpc { .. } => unreachable!(),
 		Command::Create(opts) => {
 			let datadir = {
-				let datadir = PathBuf::from(opts.datadir);
+				let datadir = PathBuf::from(cli.datadir.context("need datadir")?);
 				if !datadir.exists() {
 					fs::create_dir_all(&datadir).context("failed to create datadir")?;
 				}
@@ -127,20 +119,20 @@ async fn inner_main() -> anyhow::Result<()> {
 
 			App::create(&datadir, cfg)?;
 		},
-		Command::Start { datadir } => {
-			let (app, jh) = App::start(&datadir).context("starting server")?;
+		Command::Start => {
+			let (app, jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
 			info!("arkd onchain address: {}", app.onchain_address().await?);
 			if let Err(e) = jh.await? {
 				error!("Shutdown error from arkd: {:?}", e);
 				process::exit(1);
 			}
 		},
-		Command::GetMnemonic { datadir } => {
-			let (app, _jh) = App::start(&datadir).context("starting server")?;
+		Command::GetMnemonic => {
+			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
 			println!("{}", app.get_master_mnemonic()?);
 		},
-		Command::DropOorConflicts { datadir } => {
-			let (app, _jh) = App::start(&datadir).context("starting server")?;
+		Command::DropOorConflicts => {
+			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
 			app.drop_all_oor_conflicts()?;
 		},
 	}

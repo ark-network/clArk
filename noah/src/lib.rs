@@ -50,6 +50,9 @@ pub struct Config {
 	/// The address of your ASP.
 	pub asp_address: String,
 
+	/// Path to PEM encoded ASP TLS certificate file.
+	pub asp_cert: Option<PathBuf>,
+
 	/// The address of the Esplora HTTP server to use.
 	///
 	/// Either this or the `bitcoind_address` field has to be provided.
@@ -80,7 +83,8 @@ impl Default for Config {
 	fn default() -> Config {
 		Config {
 			network: Network::Signet,
-			asp_address: "127.0.0.1:3535".parse().unwrap(),
+			asp_address: "http://127.0.0.1:3535".to_owned(),
+			asp_cert: None,
 			esplora_address: None,
 			bitcoind_address: None,
 			bitcoind_cookiefile: None,
@@ -102,7 +106,11 @@ pub struct Wallet {
 
 impl Wallet {
 	/// Create new wallet.
-	pub async fn create(datadir: &Path, config: Config) -> anyhow::Result<Wallet> {
+	pub async fn create(
+		datadir: &Path,
+		mut config: Config,
+		asp_cert: Option<Vec<u8>>,
+	) -> anyhow::Result<Wallet> {
 		info!("Creating new noah Wallet at {}", datadir.display());
 		trace!("Config: {:?}", config);
 
@@ -110,6 +118,16 @@ impl Wallet {
 		fs::create_dir_all(&datadir).context("can't create dir")?;
 		if fs::read_dir(&datadir).context("can't read dir")?.next().is_some() {
 			bail!("dir is not empty");
+		}
+
+		if let Some(cert) = asp_cert {
+			if config.asp_cert.is_some() {
+				bail!("Can't set the ASP cert file path in config and provide a raw cert file");
+			}
+			let path = fs::canonicalize(datadir)?.join("asp.cert");
+			fs::write(&path, cert)
+				.context("failed to write ASP cert file")?;
+			config.asp_cert = Some(path);
 		}
 
 		// write the config to disk
@@ -181,8 +199,19 @@ impl Wallet {
 			master.derive_priv(&SECP, &[350.into()]).unwrap()
 		};
 
-		let asp_endpoint = tonic::transport::Uri::from_str(&config.asp_address)
+		let asp_uri = tonic::transport::Uri::from_str(&config.asp_address)
 			.context("invalid asp addr")?;
+		let asp_endpoint = if let Some(ref cert_path) = config.asp_cert {
+			let domain = asp_uri.host().context("ASP address has no domain")?.to_owned();
+			let cert = fs::read(cert_path)
+				.with_context(|| format!("failed to read ASP cert file: {}", cert_path.display()))?;
+			tonic::transport::Channel::builder(asp_uri)
+				.tls_config(tonic::transport::ClientTlsConfig::new()
+					.ca_certificate(tonic::transport::Certificate::from_pem(&cert))
+					.domain_name(domain))?
+		} else {
+			asp_uri.try_into().context("failed to convert ASP addr into endpoint")?
+		};
 		let mut asp = rpc::ArkServiceClient::connect(asp_endpoint)
 			.await.context("failed to connect to asp")?;
 

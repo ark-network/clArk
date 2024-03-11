@@ -40,7 +40,7 @@ sled = "0.34.7"
 
 
 # async + gRPC stack
-tonic = "0.10"
+tonic = { version = "0.10", features = [ "tls" ] }
 prost = "0.12"
 tokio = { version = "1.35", features = [ "full" ] }
 tokio-stream = { version = "0.1.14", features = [ "sync" ] }

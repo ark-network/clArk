@@ -14,7 +14,7 @@ mod util;
 
 use std::fs;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::str::FromStr;
 use std::time::Duration;
@@ -42,6 +42,9 @@ lazy_static::lazy_static! {
 pub struct Config {
 	pub network: bitcoin::Network,
 	pub public_rpc_address: SocketAddr,
+	pub public_rpc_tls_cert_path: Option<PathBuf>,
+	pub public_rpc_tls_key_path: Option<PathBuf>,
+	pub admin_rpc_address: Option<SocketAddr>,
 	pub bitcoind_url: String,
 	pub bitcoind_cookie: String,
 
@@ -58,7 +61,10 @@ impl Default for Config {
 	fn default() -> Config {
 		Config {
 			network: bitcoin::Network::Regtest,
-			public_rpc_address: "127.0.0.1:3535".parse().unwrap(),
+			public_rpc_address: "0.0.0.0:3535".parse().unwrap(),
+			public_rpc_tls_cert_path: None,
+			public_rpc_tls_key_path: None,
+			admin_rpc_address: Some("127.0.0.1:3536".parse().unwrap()),
 			bitcoind_url: "http://127.0.0.1:38332".into(),
 			bitcoind_cookie: "~/.bitcoin/signet/.cookie".into(),
 			round_interval: Duration::from_secs(10),
@@ -177,13 +183,28 @@ impl App {
 
 		let app = ret.clone();
 		let jh = tokio::spawn(async move {
-			tokio::select! {
-				ret = rpcserver::run_public_rpc_server(app.clone()) => {
-					ret.context("error from gRPC server")
-				},
-				ret = round::run_round_scheduler(app.clone(), round_input_rx) => {
-					ret.context("error from round scheduler")
-				},
+			//TODO(stevenroose) make this block less redundant
+			if app.config.admin_rpc_address.is_some() {
+				tokio::select! {
+					ret = rpcserver::run_public_rpc_server(app.clone()) => {
+						ret.context("error from public gRPC server")
+					},
+					ret = rpcserver::run_admin_rpc_server(app.clone()) => {
+						ret.context("error from admin gRPC server")
+					},
+					ret = round::run_round_scheduler(app.clone(), round_input_rx) => {
+						ret.context("error from round scheduler")
+					},
+				}
+			} else {
+				tokio::select! {
+					ret = rpcserver::run_public_rpc_server(app.clone()) => {
+						ret.context("error from public gRPC server")
+					},
+					ret = round::run_round_scheduler(app.clone(), round_input_rx) => {
+						ret.context("error from round scheduler")
+					},
+				}
 			}
 		});
 

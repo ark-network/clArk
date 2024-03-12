@@ -299,7 +299,7 @@ impl Vtxo {
 	/// This can be an on-chain utxo or an off-chain vtxo.
 	pub fn point(&self) -> OutPoint {
 		match self {
-			Vtxo::Onboard { base, .. } => base.utxo,
+			Vtxo::Onboard { .. } => OutPoint::new(self.vtxo_tx().txid(), 0),
 			Vtxo::Round { exit_branch, .. } => {
 				OutPoint::new(exit_branch.last().unwrap().txid(), 0).into()
 			},
@@ -342,6 +342,11 @@ impl Vtxo {
 			Vtxo::Round { ref exit_branch, .. } => exit_branch.last().unwrap().clone(),
 			Vtxo::Oor { ref oor_tx, .. } => oor_tx.clone(),
 		}
+	}
+
+	pub fn fee_anchor(&self) -> OutPoint {
+		let tx = self.vtxo_tx();
+		OutPoint::new(tx.txid(), tx.output.len() as u32 - 1)
 	}
 
 	/// Splits this vtxo in a set of non-OOR vtxos and the attached OOR txs.

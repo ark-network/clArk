@@ -60,42 +60,30 @@ impl Exit {
 	fn add_vtxo(&mut self, vtxo: &Vtxo) {
 		let id = vtxo.id();
 		match vtxo {
-			Vtxo::Onboard { base, reveal_tx_signature } => {
-				let reveal_tx = ark::onboard::create_reveal_tx(
-					&base.spec, base.utxo, Some(&reveal_tx_signature),
-				);
-
+			Vtxo::Onboard { .. } => {
+				let reveal_tx = vtxo.vtxo_tx();
 				self.broadcast.push(reveal_tx.clone());
 				self.total_size += reveal_tx.vsize();
-
-				self.started.push(id);
-				let utxo = OutPoint::new(reveal_tx.txid(), 0);
-				self.claim_inputs.push(ClaimInput { utxo, spec: base.spec.clone() });
-				self.fee_anchors.push(OutPoint::new(reveal_tx.txid(), 1));
 			},
-			Vtxo::Round { base, exit_branch, .. } => {
+			Vtxo::Round { exit_branch, .. } => {
 				let mut branch_size = 0;
 				for tx in exit_branch {
 					self.broadcast.push(tx.clone());
 					branch_size += tx.vsize();
 				}
 				self.total_size += branch_size;
-				let leaf = exit_branch.last().unwrap();
-				self.started.push(id);
-				let utxo = OutPoint::new(leaf.txid(), 0);
-				self.claim_inputs.push(ClaimInput { utxo, spec: base.spec.clone() });
-				self.fee_anchors.push(OutPoint::new(leaf.txid(), 1));
 			},
-			Vtxo::Oor { inputs, oor_tx, final_point, pseudo_spec, .. } => {
+			Vtxo::Oor { inputs, oor_tx, .. } => {
 				for input in inputs {
 					self.add_vtxo(input);
 				}
 				self.broadcast.push(oor_tx.clone());
 				self.total_size += oor_tx.vsize();
-				self.started.push(id);
-				self.claim_inputs.push(ClaimInput { utxo: *final_point, spec: pseudo_spec.clone() });
 			},
 		}
+		self.started.push(id);
+		self.fee_anchors.push(vtxo.fee_anchor());
+		self.claim_inputs.push(ClaimInput { utxo: vtxo.point(), spec: vtxo.spec().clone() });
 	}
 }
 

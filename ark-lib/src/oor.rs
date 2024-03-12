@@ -7,7 +7,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{schnorr, KeyPair, PublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
 
-use crate::{musig, util, Vtxo, VtxoRequest, VtxoSpec};
+use crate::{fee, musig, util, Vtxo, VtxoRequest, VtxoSpec};
 
 
 pub const OOR_MIN_FEE: Amount = crate::P2TR_DUST;
@@ -48,7 +48,7 @@ impl OorPayment {
 					value: output.amount.to_sat(),
 					script_pubkey: spk,
 				}
-			}).collect(),
+			}).chain([fee::dust_anchor()]).collect(),
 		}
 	}
 

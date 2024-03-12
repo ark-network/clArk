@@ -16,7 +16,7 @@ pub fn create_forfeit_tx(vtxo: &Vtxo, connector: OutPoint) -> Transaction {
 	//TODO(stevenroose) improve this hack
 	let vtxo_fee_anchor_point = {
 		let mut point = vtxo.point();
-		point.vout += 1;
+		point.vout = vtxo.vtxo_tx().output.len() as u32 - 1;
 		point
 	};
 	Transaction {

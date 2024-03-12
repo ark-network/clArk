@@ -332,26 +332,6 @@ impl Vtxo {
 		}
 	}
 
-	pub fn exit_package(&self) -> Vec<Transaction> {
-		match self {
-			Vtxo::Onboard { base, reveal_tx_signature } => {
-				let reveal_tx = onboard::create_reveal_tx(
-					&base.spec, base.utxo, Some(&reveal_tx_signature),
-				);
-				vec![reveal_tx]
-			},
-			Vtxo::Round { ref exit_branch, .. } => exit_branch.clone(),
-			Vtxo::Oor { ref inputs, oor_tx, .. } => {
-				let mut ret = Vec::with_capacity(1 + 2 * inputs.len());
-				for input in inputs {
-					ret.extend(input.exit_package());
-				}
-				ret.push(oor_tx.clone());
-				ret
-			},
-		}
-	}
-
 	/// Splits this vtxo in a set of non-OOR vtxos and the attached OOR txs.
 	pub fn split_oor(&self) -> (Vec<&Vtxo>, Vec<Transaction>) {
 		//TODO(stevenroose) this impls does allocations for each level of recursion

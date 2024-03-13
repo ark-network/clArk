@@ -20,6 +20,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Context;
+use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
 use bitcoin::{bip32, sighash, psbt, taproot, Amount, Address, OutPoint, Witness};
 use bitcoin::secp256k1::{self, KeyPair};
 use tokio::sync::{Mutex, RwLock};
@@ -239,6 +240,18 @@ impl App {
 		let mempool = emitter.mempool()?;
 		wallet.apply_unconfirmed_txs(mempool.iter().map(|(tx, time)| (tx, *time)));
 		wallet.commit()?;
+
+		// rebroadcast unconfirmed txs
+		// NB during some round failures we commit a tx but fail to broadcast it,
+		// so this ensures we still broadcast them afterwards
+		for tx in wallet.transactions() {
+			if !tx.chain_position.is_confirmed() {
+				let bc = self.bitcoind.send_raw_transaction(tx.tx_node.tx);
+				if let Err(e) = bc {
+					warn!("Error broadcasting pending tx: {}", e);
+				}
+			}
+		}
 
 		let balance = wallet.get_balance();
 		Ok(Amount::from_sat(balance.total()))

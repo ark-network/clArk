@@ -23,6 +23,8 @@ const NODE3_TX_VSIZE: u64 = 197;
 const NODE4_TX_VSIZE: u64 = 240;
 
 //TODO(stevenroose) write a test for this
+//NB this only works in regtest because it grows a few bytes when
+//the CLTV block height scriptnum grows
 pub const NODE_SPEND_WEIGHT: usize = 140;
 
 

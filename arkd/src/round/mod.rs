@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
+use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
 use bitcoin::{Amount, FeeRate, OutPoint, Sequence, Transaction};
 use bitcoin::hashes::Hash;
 use bitcoin::locktime::absolute::LockTime;
@@ -282,8 +283,8 @@ pub async fn run_round_scheduler(
 			// *   meaning from the root tx down to the leaves.
 			// ****************************************************************
 
-			let tip = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::get_block_count(&app.bitcoind)? as u32;
-			let expiry = tip+ cfg.vtxo_expiry_delta as u32;
+			let tip = app.bitcoind.get_block_count()? as u32;
+			let expiry = tip + cfg.vtxo_expiry_delta as u32;
 			debug!("Current tip is {}, so round vtxos will expire at {}", tip, expiry);
 
 			let cosign_agg_pk = musig::combine_keys(cosigners.iter().copied());
@@ -572,7 +573,7 @@ pub async fn run_round_scheduler(
 
 			// Broadcast over bitcoind.
 			debug!("Broadcasting round tx {}", round_tx.txid());
-			let bc = bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi::send_raw_transaction(&app.bitcoind, &round_tx);
+			let bc = app.bitcoind.send_raw_transaction(&round_tx);
 			if let Err(e) = bc {
 				warn!("Couldn't broadcast round tx: {}", e);
 			}

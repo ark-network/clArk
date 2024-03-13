@@ -46,10 +46,10 @@ enum Command {
 	DropOorConflicts,
 	#[command()]
 	Rpc {
-		#[command(subcommand)]
-		cmd: RpcCommand,
 		#[arg(long, default_value = RPC_ADDR)]
 		addr: String,
+		#[command(subcommand)]
+		cmd: RpcCommand,
 	},
 }
 
@@ -59,6 +59,8 @@ enum RpcCommand {
 	Balance,
 	#[command()]
 	GetAddress,
+	#[command()]
+	TriggerRound,
 	/// Stop arkd.
 	#[command()]
 	Stop,
@@ -141,8 +143,12 @@ async fn inner_main() -> anyhow::Result<()> {
 }
 
 async fn run_rpc(addr: &str, cmd: RpcCommand) -> anyhow::Result<()> {
-	let asp_endpoint = tonic::transport::Uri::from_str(&format!("http://{}", addr))
-		.context("invalid asp addr")?;
+	let addr = if addr.starts_with("http") {
+		addr.to_owned()
+	} else {
+		format!("http://{}", addr)
+	};
+	let asp_endpoint = tonic::transport::Uri::from_str(&addr).context("invalid asp addr")?;
 	let mut asp = rpc::AdminServiceClient::connect(asp_endpoint)
 		.await.context("failed to connect to asp")?;
 
@@ -155,6 +161,9 @@ async fn run_rpc(addr: &str, cmd: RpcCommand) -> anyhow::Result<()> {
 			let res = asp.wallet_status(rpc::Empty {}).await?.into_inner();
 			println!("{}", res.address);
 		},
+		RpcCommand::TriggerRound => {
+			asp.trigger_round(rpc::Empty {}).await?.into_inner();
+		}
 		RpcCommand::Stop => unimplemented!(),
 	}
 	Ok(())

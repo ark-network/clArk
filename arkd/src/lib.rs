@@ -92,6 +92,7 @@ pub struct App {
 	round_busy: Arc<RwLock<()>>,
 	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
 	round_input_tx: tokio::sync::mpsc::UnboundedSender<RoundInput>,
+	round_trigger_tx: tokio::sync::mpsc::Sender<()>,
 }
 
 impl App {
@@ -168,6 +169,7 @@ impl App {
 
 		let (round_event_tx, _rx) = tokio::sync::broadcast::channel(8);
 		let (round_input_tx, round_input_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (round_trigger_tx, round_trigger_rx) = tokio::sync::mpsc::channel(1);
 
 		let ret = Arc::new(App {
 			config: config,
@@ -180,6 +182,7 @@ impl App {
 			round_busy: Arc::new(RwLock::new(())),
 			round_event_tx: round_event_tx,
 			round_input_tx: round_input_tx,
+			round_trigger_tx: round_trigger_tx,
 		});
 
 		let app = ret.clone();
@@ -193,7 +196,7 @@ impl App {
 					ret = rpcserver::run_admin_rpc_server(app.clone()) => {
 						ret.context("error from admin gRPC server")
 					},
-					ret = round::run_round_scheduler(app.clone(), round_input_rx) => {
+					ret = round::run_round_scheduler(app.clone(), round_input_rx, round_trigger_rx) => {
 						ret.context("error from round scheduler")
 					},
 				}
@@ -202,7 +205,7 @@ impl App {
 					ret = rpcserver::run_public_rpc_server(app.clone()) => {
 						ret.context("error from public gRPC server")
 					},
-					ret = round::run_round_scheduler(app.clone(), round_input_rx) => {
+					ret = round::run_round_scheduler(app.clone(), round_input_rx, round_trigger_rx) => {
 						ret.context("error from round scheduler")
 					},
 				}
@@ -271,7 +274,7 @@ impl App {
 		if let Some(dup) = self.db.atomic_check_mark_oors_cosigned(ids.iter().copied())? {
 			bail!("attempted to double sign OOR for vtxo {}", dup)
 		} else {
-			info!("Cosigning OOR tx with inputs: {:?}", ids);
+			info!("Cosigning OOR tx {} with inputs: {:?}", payment.txid(), ids);
 			let (nonces, sigs) = payment.sign_asp(&self.master_key, &user_nonces);
 			Ok((nonces, sigs))
 		}

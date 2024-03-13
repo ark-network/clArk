@@ -150,6 +150,7 @@ fn validate_forfeit_sigs(
 pub async fn run_round_scheduler(
 	app: Arc<App>,
 	mut round_input_rx: tokio::sync::mpsc::UnboundedReceiver<RoundInput>,
+	mut round_trigger_rx: tokio::sync::mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
 	let cfg = &app.config;
 
@@ -165,6 +166,10 @@ pub async fn run_round_scheduler(
 		'sleep: loop {
 			tokio::select! {
 				() = &mut timeout => break 'sleep,
+				Some(()) = round_trigger_rx.recv() => {
+					info!("Starting round based on admin RPC trigger");
+					break 'sleep;
+				},
 				_ = round_input_rx.recv() => {},
 			}
 		}

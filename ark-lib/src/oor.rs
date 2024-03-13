@@ -2,7 +2,10 @@
 
 use std::io;
 
-use bitcoin::{Amount, FeeRate, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Weight, Witness};
+use bitcoin::{
+	Amount, FeeRate, OutPoint, ScriptBuf, Sequence, Transaction, Txid, TxIn, TxOut, Weight,
+	Witness,
+};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{schnorr, KeyPair, PublicKey};
 use bitcoin::sighash::{self, SighashCache, TapSighash, TapSighashType};
@@ -50,6 +53,10 @@ impl OorPayment {
 				}
 			}).chain([fee::dust_anchor()]).collect(),
 		}
+	}
+
+	pub fn txid(&self) -> Txid {
+		self.unsigned_transaction().txid()
 	}
 
 	pub fn sighashes(&self) -> Vec<TapSighash> {

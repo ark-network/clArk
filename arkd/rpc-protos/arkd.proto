@@ -170,6 +170,7 @@ message VtxoSignaturesRequest {
 /// Administration service for arkd.
 service AdminService {
 	rpc WalletStatus(Empty) returns (WalletStatusResponse) {}
+	rpc TriggerRound(Empty) returns (Empty) {}
 	rpc Stop(Empty) returns (Empty) {}
 }
 

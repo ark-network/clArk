@@ -687,6 +687,28 @@ pub mod admin_service_client {
                 .insert(GrpcMethod::new("arkd.AdminService", "WalletStatus"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn trigger_round(
+            &mut self,
+            request: impl tonic::IntoRequest<super::Empty>,
+        ) -> std::result::Result<tonic::Response<super::Empty>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/arkd.AdminService/TriggerRound",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("arkd.AdminService", "TriggerRound"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn stop(
             &mut self,
             request: impl tonic::IntoRequest<super::Empty>,

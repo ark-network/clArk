@@ -116,11 +116,10 @@ impl Wallet {
 
 		// Broadcast exit txs.
 		for tx in &exit.broadcast {
+			trace!("Broadcasting tx {}: {}", tx.txid(), bitcoin::consensus::encode::serialize_hex(tx));
 			if let Err(e) = self.onchain.broadcast_tx(tx).await {
 				error!("Error broadcasting exit tx {}: {}", tx.txid(), e);
-				trace!("Error broadcasting exit tx {}: {}",
-					bitcoin::consensus::encode::serialize_hex(tx), e,
-				);
+				error!("Tx {}: {}", tx.txid(), bitcoin::consensus::encode::serialize_hex(tx));
 			}
 		}
 
@@ -222,7 +221,6 @@ impl Wallet {
 			let sighash = shc.taproot_script_spend_signature_hash(
 				i, &sighash::Prevouts::All(&prevouts), leaf_hash, sighash::TapSighashType::Default,
 			).expect("all prevouts provided");
-			trace!("sighash: {}", sighash);
 
 			assert_eq!(vtxo_key.public_key(), claim.spec.user_pubkey);
 			let sig = SECP.sign_schnorr(&sighash.into(), &vtxo_key);

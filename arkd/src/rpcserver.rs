@@ -332,6 +332,18 @@ impl rpc::AdminService for Arc<App> {
 		}))
 	}
 
+	async fn trigger_round(
+		&self,
+		_req: tonic::Request<rpc::Empty>,
+	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
+		match self.round_trigger_tx.try_send(()) {
+			Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
+				Err(internal!("round scheduler closed"))
+			},
+			_ => Ok(tonic::Response::new(rpc::Empty {})),
+		}
+	}
+
 	async fn stop(
 		&self,
 		_req: tonic::Request<rpc::Empty>,

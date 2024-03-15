@@ -158,14 +158,7 @@ impl Wallet {
 			let psbt_in = psbt::Input {
 				witness_utxo: Some(ark::fee::dust_anchor()),
 				final_script_witness: Some(ark::fee::dust_anchor_witness()),
-				//TODO(stevenroose) BDK wants this here, but it shouldn't
-				non_witness_utxo: Some(Transaction {
-					version: 2,
-					lock_time: bitcoin::absolute::LockTime::ZERO,
-					input: vec![],
-					output: iter::repeat(TxOut::default()).take(utxo.vout as usize)
-						.chain([ark::fee::dust_anchor()]).collect(),
-				}),
+				non_witness_utxo: None,
 				..Default::default()
 			};
 			b.add_foreign_utxo(*utxo, psbt_in, 33).expect("adding foreign utxo");
@@ -197,7 +190,11 @@ impl Wallet {
 			b.add_recipient(change_addr.address.script_pubkey(), package_fee + ark::P2TR_DUST_SAT);
 			b.fee_rate(urgent_fee_rate);
 			let mut psbt = b.finish().expect("failed to craft anchor spend template");
-			let finalized = self.wallet.sign(&mut psbt, SignOptions::default())
+			let opts = SignOptions {
+				trust_witness_utxo: true,
+				..Default::default()
+			};
+			let finalized = self.wallet.sign(&mut psbt, opts)
 				.expect("failed to sign anchor spend template");
 			assert!(finalized);
 			psbt.extract_tx().vsize()

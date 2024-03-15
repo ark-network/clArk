@@ -638,7 +638,7 @@ impl Wallet {
 		let mut events = self.asp.subscribe_rounds(rpc::Empty {}).await?.into_inner();
 
 		// Wait for the next round start.
-		trace!("Waiting for a round start.");
+		info!("Waiting for a round start...");
 		let (mut round_id, offboard_feerate) = loop {
 			match events.next().await.context("events stream broke")??.event.unwrap() {
 				rpc::round_event::Event::Start(rpc::RoundStart {
@@ -650,6 +650,7 @@ impl Wallet {
 				_ => {},
 			}
 		};
+		info!("Round started");
 
 		let (input_vtxos, vtxo_reqs, offb_reqs) = round_input(round_id, offboard_feerate)
 			.context("error providing round input")?;

@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Context;
-use bitcoin::{Amount, Network};
+use bitcoin::{Address, Amount, Network};
 use clap::Parser;
 
 use arkd::{App, Config};
@@ -40,6 +40,11 @@ enum Command {
 	Create(CreateOpts),
 	#[command()]
 	Start,
+	#[command()]
+	Drain {
+		/// the address to send all the wallet funds to
+		address: Address<bitcoin::address::NetworkUnchecked>,
+	},
 	#[command()]
 	GetMnemonic,
 	#[command()]
@@ -128,6 +133,10 @@ async fn inner_main() -> anyhow::Result<()> {
 				error!("Shutdown error from arkd: {:?}", e);
 				process::exit(1);
 			}
+		},
+		Command::Drain { address } => {
+			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
+			println!("{}", app.drain(address).await?.txid());
 		},
 		Command::GetMnemonic => {
 			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;

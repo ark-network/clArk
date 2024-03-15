@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
-use bitcoin::{bip32, sighash, psbt, taproot, Amount, Address, OutPoint, Witness};
+use bitcoin::{bip32, sighash, psbt, taproot, Amount, Address, OutPoint, Transaction, Witness};
 use bitcoin::secp256k1::{self, KeyPair};
 use tokio::sync::{Mutex, RwLock};
 
@@ -258,6 +258,32 @@ impl App {
 
 		let balance = wallet.get_balance();
 		Ok(Amount::from_sat(balance.total()))
+	}
+
+	pub async fn drain(
+		&self,
+		address: Address<bitcoin::address::NetworkUnchecked>,
+	) -> anyhow::Result<Transaction> {
+		//TODO(stevenroose) also claim all expired round vtxos here!
+
+		let addr = address.require_network(self.config.network)?;
+
+		let mut wallet = self.wallet.lock().await;
+		let mut b = wallet.build_tx();
+		b.drain_to(addr.script_pubkey());
+		b.drain_wallet();
+		let mut psbt = b.finish().context("error building tx")?;
+		let finalized = wallet.sign(&mut psbt, bdk::SignOptions::default())?;
+		assert!(finalized);
+		let tx = psbt.extract_tx();
+		wallet.commit()?;
+
+		if let Err(e) = self.bitcoind.send_raw_transaction(&tx) {
+			error!("Error roadcasting tx: {}", e);
+			error!("Try yourself: {}", bitcoin::consensus::encode::serialize_hex(&tx));
+		}
+
+		Ok(tx)
 	}
 
 	pub fn cosign_onboard(&self, user_part: ark::onboard::UserPart) -> ark::onboard::AspPart {

@@ -147,8 +147,6 @@ dependencies = [
  "rocksdb",
  "serde",
  "serde_json",
- "sled",
- "sled-utils",
  "tokio",
  "tokio-stream",
  "tonic",

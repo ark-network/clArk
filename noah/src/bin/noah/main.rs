@@ -111,7 +111,7 @@ enum Command {
 	ClaimExit,
 
 	/// Dev command to drop the vtxo database.
-	#[command()]
+	#[command(hide = true)]
 	DropVtxos,
 }
 

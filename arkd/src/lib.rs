@@ -78,6 +78,16 @@ impl Default for Config {
 	}
 }
 
+pub struct RoundHandle {
+	/// Whenever a round is going on, this lock will be held.
+	/// This helps us schedule tasks like db cleanups without
+	/// interfering with rounds.
+	round_busy: RwLock<()>,
+	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
+	round_input_tx: tokio::sync::mpsc::UnboundedSender<RoundInput>,
+	round_trigger_tx: tokio::sync::mpsc::Sender<()>,
+}
+
 pub struct App {
 	config: Config,
 	db: database::Db,
@@ -86,13 +96,7 @@ pub struct App {
 	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
 	
-	/// Whenever a round is going on, this lock will be held.
-	/// This helps us schedule tasks like db cleanups without
-	/// interfering with rounds.
-	round_busy: Arc<RwLock<()>>,
-	round_event_tx: tokio::sync::broadcast::Sender<RoundEvent>,
-	round_input_tx: tokio::sync::mpsc::UnboundedSender<RoundInput>,
-	round_trigger_tx: tokio::sync::mpsc::Sender<()>,
+	rounds: Option<RoundHandle>,
 }
 
 impl App {
@@ -123,7 +127,7 @@ impl App {
 		Ok(())
 	}
 
-	pub fn start(datadir: &Path) -> anyhow::Result<(Arc<Self>, tokio::task::JoinHandle<anyhow::Result<()>>)> {
+	pub fn open(datadir: &Path) -> anyhow::Result<Arc<Self>> {
 		info!("Starting arkd at {}", datadir.display());
 
 		let config = {
@@ -167,25 +171,33 @@ impl App {
 			bdk_bitcoind_rpc::bitcoincore_rpc::Auth::CookieFile(config.bitcoind_cookie.as_str().into()),
 		).context("failed to create bitcoind rpc client")?;
 
-		let (round_event_tx, _rx) = tokio::sync::broadcast::channel(8);
-		let (round_input_tx, round_input_rx) = tokio::sync::mpsc::unbounded_channel();
-		let (round_trigger_tx, round_trigger_rx) = tokio::sync::mpsc::channel(1);
 
-		let ret = Arc::new(App {
+		Ok(Arc::new(App {
 			config: config,
 			db: db,
 			master_xpriv: xpriv,
 			master_key: master_key,
 			wallet: Mutex::new(wallet),
 			bitcoind: bitcoind,
+			rounds: None,
+		}))
+	}
 
-			round_busy: Arc::new(RwLock::new(())),
+	pub fn start(self: &mut Arc<Self>) -> anyhow::Result<tokio::task::JoinHandle<anyhow::Result<()>>> {
+		let mut_self = Arc::get_mut(self).context("can only start if we are unique Arc")?;
+
+		let (round_event_tx, _rx) = tokio::sync::broadcast::channel(8);
+		let (round_input_tx, round_input_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (round_trigger_tx, round_trigger_rx) = tokio::sync::mpsc::channel(1);
+
+		mut_self.rounds = Some(RoundHandle {
+			round_busy: RwLock::new(()),
 			round_event_tx: round_event_tx,
 			round_input_tx: round_input_tx,
 			round_trigger_tx: round_trigger_tx,
 		});
 
-		let app = ret.clone();
+		let app = self.clone();
 		let jh = tokio::spawn(async move {
 			//TODO(stevenroose) make this block less redundant
 			if app.config.admin_rpc_address.is_some() {
@@ -212,7 +224,15 @@ impl App {
 			}
 		});
 
-		Ok((ret, jh))
+		Ok(jh)
+	}
+
+	pub fn try_rounds(&self) -> anyhow::Result<&RoundHandle> {
+		self.rounds.as_ref().context("no round scheduler started yet")
+	}
+
+	pub fn rounds(&self) -> &RoundHandle {
+		self.try_rounds().expect("should only call this in round scheduler code")
 	}
 
 	pub async fn onchain_address(&self) -> anyhow::Result<Address> {
@@ -277,6 +297,7 @@ impl App {
 		assert!(finalized);
 		let tx = psbt.extract_tx();
 		wallet.commit()?;
+		drop(wallet);
 
 		if let Err(e) = self.bitcoind.send_raw_transaction(&tx) {
 			error!("Error roadcasting tx: {}", e);

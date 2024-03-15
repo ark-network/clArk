@@ -170,7 +170,7 @@ impl rpc::ArkService for Arc<App> {
 		&self,
 		_req: tonic::Request<rpc::Empty>,
 	) -> Result<tonic::Response<Self::SubscribeRoundsStream>, tonic::Status> {
-		let chan = self.round_event_tx.subscribe();
+		let chan = self.try_rounds().to_status()?.round_event_tx.subscribe();
 		let stream = BroadcastStream::new(chan);
 
 		Ok(tonic::Response::new(Box::new(stream.map(|e| {
@@ -274,7 +274,7 @@ impl rpc::ArkService for Arc<App> {
 		let inp = RoundInput::RegisterPayment {
 			inputs, outputs, offboards, cosign_pubkey, public_nonces,
 		};
-		self.round_input_tx.send(inp).expect("input channel closed");
+		self.try_rounds().to_status()?.round_input_tx.send(inp).expect("input channel closed");
 		Ok(tonic::Response::new(rpc::Empty {}))
 	}
 
@@ -292,7 +292,7 @@ impl rpc::ArkService for Arc<App> {
 					.map_err(|e| badarg!("invalid signature: {}", e))
 			}).collect::<Result<_, tonic::Status>>()?,
 		};
-		self.round_input_tx.send(inp).expect("input channel closed");
+		self.try_rounds().to_status()?.round_input_tx.send(inp).expect("input channel closed");
 		Ok(tonic::Response::new(rpc::Empty {}))
 	}
 
@@ -315,7 +315,7 @@ impl rpc::ArkService for Arc<App> {
 				Ok((id, nonces, signatures))
 			}).collect::<Result<_, tonic::Status>>()?
 		};
-		self.round_input_tx.send(inp).expect("input channel closed");
+		self.try_rounds().to_status()?.round_input_tx.send(inp).expect("input channel closed");
 		Ok(tonic::Response::new(rpc::Empty {}))
 	}
 }
@@ -336,7 +336,7 @@ impl rpc::AdminService for Arc<App> {
 		&self,
 		_req: tonic::Request<rpc::Empty>,
 	) -> Result<tonic::Response<rpc::Empty>, tonic::Status> {
-		match self.round_trigger_tx.try_send(()) {
+		match self.try_rounds().to_status()?.round_trigger_tx.try_send(()) {
 			Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
 				Err(internal!("round scheduler closed"))
 			},

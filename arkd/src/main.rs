@@ -127,7 +127,8 @@ async fn inner_main() -> anyhow::Result<()> {
 			App::create(&datadir, cfg)?;
 		},
 		Command::Start => {
-			let (app, jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
+			let mut app = App::open(&cli.datadir.context("need datadir")?).context("server init")?;
+			let jh = app.start()?;
 			info!("arkd onchain address: {}", app.onchain_address().await?);
 			if let Err(e) = jh.await? {
 				error!("Shutdown error from arkd: {:?}", e);
@@ -135,15 +136,15 @@ async fn inner_main() -> anyhow::Result<()> {
 			}
 		},
 		Command::Drain { address } => {
-			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
+			let app = App::open(&cli.datadir.context("need datadir")?).context("server init")?;
 			println!("{}", app.drain(address).await?.txid());
 		},
 		Command::GetMnemonic => {
-			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
+			let app = App::open(&cli.datadir.context("need datadir")?).context("server init")?;
 			println!("{}", app.get_master_mnemonic()?);
 		},
 		Command::DropOorConflicts => {
-			let (app, _jh) = App::start(&cli.datadir.context("need datadir")?).context("starting server")?;
+			let app = App::open(&cli.datadir.context("need datadir")?).context("server init")?;
 			app.drop_all_oor_conflicts()?;
 		},
 	}

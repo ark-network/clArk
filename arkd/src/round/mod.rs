@@ -174,13 +174,13 @@ pub async fn run_round_scheduler(
 			}
 		}
 
-		let _ = app.round_busy.write().await;
+		let _ = app.rounds().round_busy.write().await;
 		let round_id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() /
 			cfg.round_interval.as_secs();
 		info!("Starting round {}", round_id);
 
 		// Start new round, announce.
-		let _ = app.round_event_tx.send(RoundEvent::Start { id: round_id, offboard_feerate });
+		let _ = app.rounds().round_event_tx.send(RoundEvent::Start { id: round_id, offboard_feerate });
 
 		// Allocate this data once per round so that we can keep them 
 		// Perhaps we could even keep allocations between all rounds, but time
@@ -367,7 +367,7 @@ pub async fn run_round_scheduler(
 			assert_eq!(vtxo_sighashes.len(), agg_vtxo_nonces.len());
 
 			// Send out vtxo proposal to signers.
-			let _ = app.round_event_tx.send(RoundEvent::VtxoProposal {
+			let _ = app.rounds().round_event_tx.send(RoundEvent::VtxoProposal {
 				id: round_id,
 				round_tx: round_tx.clone(),
 				vtxos_spec: vtxos_spec.clone(),
@@ -474,7 +474,7 @@ pub async fn run_round_scheduler(
 			}
 
 			// Send out round proposal to signers.
-			let _ = app.round_event_tx.send(RoundEvent::RoundProposal {
+			let _ = app.rounds().round_event_tx.send(RoundEvent::RoundProposal {
 				id: round_id,
 				round_tx: round_tx.clone(),
 				vtxos: signed_vtxos.clone(),
@@ -585,7 +585,7 @@ pub async fn run_round_scheduler(
 
 			// Send out the finished round to users.
 			trace!("Sending out finish event.");
-			let _ = app.round_event_tx.send(RoundEvent::Finished {
+			let _ = app.rounds().round_event_tx.send(RoundEvent::Finished {
 				id: round_id,
 				vtxos: signed_vtxos.clone(),
 				round_tx: round_tx.clone(),

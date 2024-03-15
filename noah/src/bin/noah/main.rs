@@ -95,9 +95,9 @@ enum Command {
 		destination: String,
 		amount: Amount,
 	},
-	/// Send money through Ark.
+	/// Send money in an Ark round.
 	#[command()]
-	Send {
+	SendRound {
 		/// Destination for the payment, this can either be an on-chain address
 		/// or a public key for an Ark payment.
 		destination: String,
@@ -226,7 +226,7 @@ async fn inner_main(cli: Cli) -> anyhow::Result<()> {
 			w.send_oor_payment(pk, amount).await?;
 			info!("Success");
 		},
-		Command::Send { destination, amount } => {
+		Command::SendRound { destination, amount } => {
 			if let Ok(pk) = PublicKey::from_str(&destination) {
 				debug!("Sending to Ark public key {}", pk);
 				w.send_ark_payment(pk, amount).await?;

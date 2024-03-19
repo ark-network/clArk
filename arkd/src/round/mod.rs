@@ -570,7 +570,11 @@ pub async fn run_round_scheduler(
 
 			// Sign the on-chain tx.
 			app.sign_round_utxo_inputs(&mut round_tx_psbt).context("signing round inputs")?;
-			let finalized = wallet.sign(&mut round_tx_psbt, bdk::SignOptions::default())?;
+			let opts = bdk::SignOptions {
+				trust_witness_utxo: true,
+				..Default::default()
+			};
+			let finalized = wallet.sign(&mut round_tx_psbt, opts)?;
 			assert!(finalized);
 			let round_tx = round_tx_psbt.extract_tx();
 			wallet.commit()?;

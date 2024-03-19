@@ -300,7 +300,7 @@ impl App {
 		drop(wallet);
 
 		if let Err(e) = self.bitcoind.send_raw_transaction(&tx) {
-			error!("Error roadcasting tx: {}", e);
+			error!("Error broadcasting tx: {}", e);
 			error!("Try yourself: {}", bitcoin::consensus::encode::serialize_hex(&tx));
 		}
 
@@ -349,7 +349,7 @@ impl App {
 				tap_internal_key: Some(round.signed_tree.spec.cosign_agg_pk),
 				tap_scripts: [(spend_cb, (spend_script, spend_lv))].into_iter().collect(),
 				tap_merkle_root: Some(spend_merkle),
-				non_witness_utxo: Some(round.tx.clone()),
+				non_witness_utxo: None,
 				..Default::default()
 			};
 			psbt_in.set_round_meta(round_txid, RoundMeta::Vtxo);
@@ -365,7 +365,7 @@ impl App {
 				witness_utxo: Some(round.tx.output[1].clone()),
 				sighash_type: Some(sighash::TapSighashType::Default.into()),
 				tap_internal_key: Some(pubkey.x_only_public_key().0),
-				non_witness_utxo: Some(round.tx.clone()),
+				non_witness_utxo: None,
 				..Default::default()
 			};
 			psbt_in.set_round_meta(round_txid, RoundMeta::Connector);

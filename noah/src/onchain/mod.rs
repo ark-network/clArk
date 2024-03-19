@@ -2,7 +2,6 @@
 mod chain;
 pub use self::chain::ChainSource;
 
-use std::iter;
 use std::path::Path;
 
 use anyhow::Context;
@@ -130,8 +129,11 @@ impl Wallet {
 	}
 
 	pub fn finish_tx(&mut self, mut psbt: Psbt) -> anyhow::Result<Transaction> {
-		let finalized = self.wallet.sign(&mut psbt, SignOptions::default())
-			.context("failed to sign")?;
+		let opts = SignOptions {
+			trust_witness_utxo: true,
+			..Default::default()
+		};
+		let finalized = self.wallet.sign(&mut psbt, opts).context("failed to sign")?;
 		assert!(finalized);
 		self.wallet.commit().context("error committing wallet")?;
 		Ok(psbt.extract_tx())

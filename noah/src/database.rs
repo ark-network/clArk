@@ -49,11 +49,8 @@ impl Db {
 	pub fn store_vtxo(&self, vtxo: &Vtxo) -> anyhow::Result<()> {
 		let vtxo_tree = self.db.open_tree(VTXO_TREE)?;
 		let expiry_tree = self.db.open_tree(VTXO_EXPIRY_TREE)?;
-		(vtxo_tree, expiry_tree).transaction(|(vtxo_tree, expiry_tree)| {
-			vtxo_tree.insert(vtxo.id(), vtxo.encode())?;
-			BucketTree::new(expiry_tree)
-				.insert(vtxo.spec().expiry_height.to_le_bytes(), &vtxo.id())?;
-		})?;
+		vtxo_tree.insert(vtxo.id(), vtxo.encode())?;
+        BucketTree::new(expiry_tree).insert(vtxo.spec().expiry_height.to_le_bytes(), &vtxo.id())?;
 		Ok(())
 	}
 
@@ -93,16 +90,13 @@ impl Db {
 	pub fn remove_vtxo(&self, id: VtxoId) -> anyhow::Result<Option<Vtxo>> {
 		let vtxo_tree = self.db.open_tree(VTXO_TREE)?;
 		let expiry_tree = self.db.open_tree(VTXO_EXPIRY_TREE)?;
-		Ok((vtxo_tree, expiry_tree).transaction(|(vtxo_tree, expiry_tree)| {
-			if let Some(v) = vtxo_tree.remove(&id)? {
-				let ret = Vtxo::decode(&v).expect("corrupt db: invalid vtxo");
-				BucketTree::new(expiry_tree)
-					.remove(ret.spec().expiry_height.to_le_bytes(), &id)?;
-				Ok(Some(ret))
-			} else {
-				Ok(None)
-			}
-		})?)
+		if let Some(v) = vtxo_tree.remove(&id)? {
+            let ret = Vtxo::decode(&v).expect("corrupt db: invalid vtxo");
+            BucketTree::new(expiry_tree).remove(ret.spec().expiry_height.to_le_bytes(), &id)?;
+            Ok(Some(ret))
+        } else {
+            Ok(None)
+        }
 	}
 
 	/// This overrides the existing list of exit claim inputs with the new list.

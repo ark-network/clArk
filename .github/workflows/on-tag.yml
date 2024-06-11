@@ -12,6 +12,28 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v1 
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tag name
+        id: extract_tag
+        run: echo "::set-output name=tag::${GITHUB_REF#refs/tags/}"
+  
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: ark-network/clark:latest,ark-network/clark:${{ steps.extract_tag.outputs.tag }}
+          platforms: linux/amd64,linux/arm64
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
@@ -32,24 +54,6 @@ jobs:
           cargo build --release --target x86_64-apple-darwin
           cargo build --release --target aarch64-unknown-linux-gnu
           cargo build --release --target aarch64-apple-darwin
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v1
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v1 
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v2
-        with:
-          context: .
-          push: true
-          tags: ark-network/clark:latest
-          platforms: linux/amd64,linux/arm64,darwin/amd64,darwin/arm64
 
       - name: Create Release
         id: create_release
@@ -76,3 +80,20 @@ jobs:
                   "${{ steps.create_release.outputs.upload_url }}?name=$binary-$target"
               done
             done
+
+      - name: Update Release Description
+        uses: actions/github-script@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const releaseId = ${{ steps.create_release.outputs.id }}
+            const dockerImage = `ghcr.io/ark-network/clark`
+            const newBody = `Docker image available at \`${dockerImage}\`. You can pull it using \`docker pull ${dockerImage}\`.`
+            github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: releaseId,
+              body: newBody
+            })

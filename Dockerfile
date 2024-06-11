@@ -1,5 +1,5 @@
 # Stage 1: Building the code
-FROM rust:1.78 as builder
+FROM rust:bullseye as builder
 
 WORKDIR /usr/src
 

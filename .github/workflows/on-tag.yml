@@ -24,14 +24,14 @@ jobs:
 
       - name: Extract tag name
         id: extract_tag
-        run: echo "::set-output name=tag::${GITHUB_REF#refs/tags/}"
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
   
       - name: Build and push Docker image
         uses: docker/build-push-action@v2
         with:
           context: .
           push: true
-          tags: ark-network/clark:latest,ark-network/clark:${{ steps.extract_tag.outputs.tag }}
+          tags: ark-network/clark:latest,ark-network/clark:${{ env.TAG }}
           platforms: linux/amd64,linux/arm64
 
       - name: Install Rust toolchain
@@ -41,9 +41,12 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-      - name: Install Protobuf Compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install Clang
+        run: sudo apt-get install -y clang
   
+      - name: Install Protobuf Compiler 
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev && sudo rm -rf /var/lib/apt/lists/*
+    
       - name: Build binaries
         run: |
           rustup target add x86_64-unknown-linux-gnu

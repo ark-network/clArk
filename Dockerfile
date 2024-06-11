@@ -13,7 +13,7 @@ COPY . .
 RUN cargo build --release
 
 # Stage 2: Setup the runtime environment
-FROM debian:buster-slim
+FROM debian:bullseye-slim
 
 # Install necessary runtime dependencies
 RUN apt-get update && apt-get install -y libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*

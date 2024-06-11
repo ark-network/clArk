@@ -19,6 +19,9 @@ jobs:
           override: true
           components: rustfmt, clippy
 
+      - name: Install Protobuf Compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+  
       - name: Build binaries
         run: |
           rustup target add x86_64-unknown-linux-gnu

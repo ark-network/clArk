@@ -31,7 +31,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ark-network/clark:latest,ark-network/clark:${{ env.TAG }}
+          tags: ghcr.io/ark-network/clark:latest,ghcr.io/ark-network/clark:${{ env.TAG }}
           platforms: linux/amd64,linux/arm64
 
       - name: Install Rust toolchain

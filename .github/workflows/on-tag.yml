@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      OPENSSL_DIR: /usr/include/openssl
     steps:      
       - name: Extract tag name
         id: extract_tag

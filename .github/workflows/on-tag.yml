@@ -15,8 +15,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang gcc-aarch64-linux-gnu
+          sudo apt update
+          sudo apt install -y clang gcc-aarch64-linux-gnu protobuf-compiler
         
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1

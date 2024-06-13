@@ -8,8 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      OPENSSL_DIR: /usr/include/openssl
     steps:      
       - name: Extract tag name
         id: extract_tag
@@ -29,6 +27,9 @@ jobs:
           toolchain: stable
           override: true
           components: rustfmt, clippy
+
+      - name: Install cross
+        run: cargo install cross
       
       - name: Add Rust targets
         run: |
@@ -39,9 +40,8 @@ jobs:
 
       - name: Build binaries
         run: |
-            cargo build --release --target x86_64-unknown-linux-gnu
-            CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo build --release --target aarch64-unknown-linux-gnu
-            cargo install cross
+            cross build --release --target x86_64-unknown-linux-gnu
+            cross build --release --target aarch64-unknown-linux-gnu
             cross build --release --target x86_64-apple-darwin
             cross build --release --target aarch64-apple-darwin
             

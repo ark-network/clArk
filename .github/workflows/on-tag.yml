@@ -43,8 +43,16 @@ jobs:
           toolchain: stable
           override: true
           components: rustfmt, clippy
-          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+
       
+      
+      - name: Add Rust targets
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-unknown-linux-gnu
+          rustup target add aarch64-apple-darwin
+
       - name: Build binaries
         run: |
             cargo build --release --target x86_64-unknown-linux-gnu

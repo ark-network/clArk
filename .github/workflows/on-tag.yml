@@ -1,8 +1,9 @@
 name: Build and Dockerize
 
 on:
-  release:
-    types: [created]
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   docker:
@@ -33,7 +34,7 @@ jobs:
           push: true
           tags: ghcr.io/ark-network/clark:latest,ghcr.io/ark-network/clark:${{ env.TAG }}
           platforms: linux/amd64,linux/arm64
-          
+
   binary:
     runs-on: ${{ matrix.os }}
     strategy:

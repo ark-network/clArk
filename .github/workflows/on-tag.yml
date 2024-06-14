@@ -63,7 +63,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang gcc-aarch64-linux-gnu protobuf-compiler libssl-dev
+          sudo apt-get install -y clang protobuf-compiler libssl-dev
+          if [ "${{ matrix.arch }}" == "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu protobuf-compiler libssl-dev:arm64
+            export OPENSSL_DIR=/usr/aarch64-linux-gnu
+          fi
 
       - name: Install dependencies on macOS
         if: runner.os == 'macOS'

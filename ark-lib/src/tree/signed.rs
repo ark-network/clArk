@@ -324,7 +324,7 @@ mod test {
 		let key1 = Keypair::new(&secp, &mut rand::thread_rng()); // asp
 		let key2 = Keypair::new(&secp, &mut rand::thread_rng());
 		let sha = sha256::Hash::from_str("4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a").unwrap();
-		let message = Message::from_digest_slice(sha.as_byte_array()).unwrap();
+		let message = Message::from_digest_slice(&sha.to_byte_array()).unwrap();
 		let sig = secp.sign_schnorr(&message, &key1);
 		let dest = VtxoRequest {
 			pubkey: Keypair::new(&secp, &mut rand::thread_rng()).public_key(),
@@ -363,7 +363,7 @@ mod test {
 				assert_eq!(leaf.vsize() as u64, LEAF_TX_VSIZE);
 				for node in iter {
 					assert_eq!(
-						node.input[0].witness.len(),
+						node.input[0].witness.size(),
 						crate::TAPROOT_KEYSPEND_WEIGHT,
 					);
 					match node.output.len() {

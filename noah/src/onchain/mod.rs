@@ -2,16 +2,18 @@
 mod chain;
 pub use self::chain::ChainSource;
 
+use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::Context;
-use bdk::SignOptions;
+use bdk_wallet::{KeychainKind, SignOptions};
 use bdk_file_store::Store;
 use bdk_esplora::EsploraAsyncExt;
 use bitcoin::{
-	bip32, psbt, Address, Amount, Network, OutPoint, Sequence, Transaction, TxOut, Txid,
+	bip32, psbt, Address, Amount, Network, OutPoint, Script, Sequence, Transaction, TxOut, Txid
 };
-use bitcoin::psbt::PartiallySignedTransaction as Psbt; //TODO(stevenroose) when v0.31
+use bitcoin::psbt::Psbt; //TODO(stevenroose) when v0.31
 
 use crate::exit;
 use crate::psbtext::PsbtInputExt;
@@ -20,7 +22,8 @@ use self::chain::ChainSourceClient;
 const DB_MAGIC: &str = "onchain_bdk";
 
 pub struct Wallet {
-	wallet: bdk::Wallet<Store<'static, bdk::wallet::ChangeSet>>,
+	wallet: bdk_wallet::Wallet,
+	file_store: Store<bdk_wallet::wallet::ChangeSet>,
 	chain_source: ChainSourceClient,
 }
 
@@ -32,18 +35,19 @@ impl Wallet {
 		chain_source: ChainSource,
 	) -> anyhow::Result<Wallet> {
 		let db_path = dir.join("bdkwallet.db");
-		let db = Store::<bdk::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
+		let mut db = Store::<bdk_wallet::wallet::ChangeSet>::open_or_create_new(DB_MAGIC.as_bytes(), db_path)?;
+		let change_set = db.aggregate_changesets()?;
 
 		//TODO(stevenroose) taproot?
-		let xpriv = bip32::ExtendedPrivKey::new_master(network, &seed).expect("valid seed");
+		let xpriv = bip32::Xpriv::new_master(network, &seed).expect("valid seed");
 		let edesc = format!("tr({}/84'/0'/0'/0/*)", xpriv);
 		let idesc = format!("tr({}/84'/0'/0'/1/*)", xpriv);
 
-		let wallet = bdk::Wallet::new_or_load(&edesc, Some(&idesc), db, network)
+		let wallet = bdk_wallet::Wallet::new_or_load(&edesc, &idesc, change_set, network)
 			.context("failed to create or load bdk wallet")?;
 		
 		let chain_source = ChainSourceClient::new(chain_source)?;
-		Ok(Wallet { wallet, chain_source })
+		Ok(Wallet { wallet, chain_source, file_store: db })
 	}
 
 	pub async fn tip(&self) -> anyhow::Result<u32> {
@@ -58,6 +62,18 @@ impl Wallet {
 		self.chain_source.txout_confirmations(outpoint).await
 	}
 
+	fn generate_inspect(kind: KeychainKind) -> impl FnMut(u32, &Script) + Send + Sync + 'static {
+        let mut once = Some(());
+        let mut stdout = std::io::stdout();
+        move |spk_i, _| {
+            match once.take() {
+                Some(_) => print!("\nScanning keychain [{:?}]", kind),
+                None => print!(" {:<3}", spk_i),
+            };
+            stdout.flush().expect("must flush");
+        }
+    }
+
 	pub async fn sync(&mut self) -> anyhow::Result<Amount> {
 		debug!("Starting wallet sync...");
 
@@ -71,40 +87,59 @@ impl Wallet {
 					self.wallet.apply_block_connected_to(
 						&em.block, em.block_height(), em.connected_to(),
 					)?;
-					self.wallet.commit()?;
+					if let Some(change_set) = self.wallet.take_staged() {
+						self.file_store.append_changeset(&change_set)?;
+					}
 				}
 
 				let mempool = emitter.mempool()?;
 				self.wallet.apply_unconfirmed_txs(mempool.iter().map(|(tx, time)| (tx, *time)));
-				self.wallet.commit()?;
+				if let Some(change_set) = self.wallet.take_staged() {
+					self.file_store.append_changeset(&change_set)?;
+				}
 			},
 			ChainSourceClient::Esplora(ref client) => {
+				let request = self.wallet.start_full_scan().inspect_spks_for_all_keychains({
+					let mut once = BTreeSet::<KeychainKind>::new();
+					move |keychain, spk_i, _| {
+						match once.insert(keychain) {
+							true => print!("\nScanning keychain [{:?}]", keychain),
+							false => print!(" {:<3}", spk_i),
+						}
+						std::io::stdout().flush().expect("must flush")
+					}
+				}).inspect_spks_for_keychain(
+					KeychainKind::External,
+					Self::generate_inspect(KeychainKind::External),
+					)
+					.inspect_spks_for_keychain(
+						KeychainKind::Internal,
+						Self::generate_inspect(KeychainKind::Internal),
+						);
 				const STOP_GAP: usize = 50;
+				const PARALLEL_REQUESTS: usize = 5;
 
-				let prev_tip = self.wallet.latest_checkpoint();
-				let keychain_spks = self.wallet.spks_of_all_keychains().into_iter().collect();
-				let (update_graph, last_active_indices) =
-					client.full_scan(keychain_spks, STOP_GAP, 4).await?;
-				let missing_heights = update_graph.missing_heights(self.wallet.local_chain());
-				let chain_update = client.update_local_chain(prev_tip, missing_heights).await?;
-				let update = bdk::wallet::Update {
-					last_active_indices,
-					graph: update_graph,
-					chain: Some(chain_update),
-				};
+				let mut update = client
+					.full_scan(request, STOP_GAP, PARALLEL_REQUESTS)
+					.await?;
+				let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_secs();
+				let _ = update.graph_update.update_last_seen_unconfirmed(now);
+
 				self.wallet.apply_update(update)?;
-				self.wallet.commit()?;
+				if let Some(change_set) = self.wallet.take_staged() {
+					self.file_store.append_changeset(&change_set)?;
+				}
 			},
 		}
 
-		let balance = self.wallet.get_balance();
-		Ok(Amount::from_sat(balance.total()))
+		let balance = self.wallet.balance();
+		Ok(balance.total())
 	}
 
 	/// Fee rate to use for regular txs like onboards.
-	fn regular_fee_rate_bdk(&self) -> bdk::FeeRate {
+	fn regular_fee_rate_bdk(&self) -> bitcoin::FeeRate {
 		//TODO(stevenroose) get from somewhere
-		bdk::FeeRate::from_sat_per_vb(10.0)
+		bitcoin::FeeRate::from_sat_per_vb(10).unwrap()
 	}
 
 	/// Fee rate to use for regular txs like onboards.
@@ -113,16 +148,16 @@ impl Wallet {
 	}
 
 	/// Fee rate to use for urgent txs like exits.
-	fn urgent_fee_rate_bdk(&self) -> bdk::FeeRate {
+	fn urgent_fee_rate_bdk(&self) -> bitcoin::FeeRate {
 		//TODO(stevenroose) get from somewhere
-		bdk::FeeRate::from_sat_per_vb(100.0)
+		bitcoin::FeeRate::from_sat_per_vb(100).unwrap()
 	}
 
 	pub fn prepare_tx(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Psbt> {
 		let fee_rate = self.regular_fee_rate_bdk();
 		let mut b = self.wallet.build_tx();
-		b.ordering(bdk::wallet::tx_builder::TxOrdering::Untouched);
-		b.add_recipient(dest.script_pubkey(), amount.to_sat());
+		b.ordering(bdk_wallet::wallet::tx_builder::TxOrdering::Untouched);
+		b.add_recipient(dest.script_pubkey(), amount);
 		b.fee_rate(fee_rate);
 		b.enable_rbf();
 		Ok(b.finish()?)
@@ -135,8 +170,10 @@ impl Wallet {
 		};
 		let finalized = self.wallet.sign(&mut psbt, opts).context("failed to sign")?;
 		assert!(finalized);
-		self.wallet.commit().context("error committing wallet")?;
-		Ok(psbt.extract_tx())
+		if let Some(change_set) = self.wallet.take_staged() {
+			self.file_store.append_changeset(&change_set)?;
+		}
+		Ok(psbt.extract_tx()?)
 	}
 
 	pub async fn send_money(&mut self, dest: Address, amount: Amount) -> anyhow::Result<Txid> {
@@ -144,17 +181,16 @@ impl Wallet {
 		let psbt = self.prepare_tx(dest, amount)?;
 		let tx = self.finish_tx(psbt)?;
 		self.broadcast_tx(&tx).await?;
-		Ok(tx.txid())
+		Ok(tx.compute_txid())
 	}
 
 	pub fn new_address(&mut self) -> anyhow::Result<Address> {
-		Ok(self.wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address)
+		Ok(self.wallet.next_unused_address(KeychainKind::External).address)
 	}
 
-	fn add_anchors<A, B, C>(b: &mut bdk::TxBuilder<A, B, C>, anchors: &[OutPoint])
+	fn add_anchors<A>(b: &mut bdk_wallet::TxBuilder<A>, anchors: &[OutPoint])
 	where 
-		B: bdk::wallet::coin_selection::CoinSelectionAlgorithm,
-		C: bdk::wallet::tx_builder::TxBuilderContext,
+		A: bdk_wallet::wallet::coin_selection::CoinSelectionAlgorithm,
 	{
 		for utxo in anchors {
 			let psbt_in = psbt::Input {
@@ -181,15 +217,15 @@ impl Wallet {
 		// overshoot the fee, but we prefer that over undershooting it.
 
 		let urgent_fee_rate = self.urgent_fee_rate_bdk();
-		let package_fee = urgent_fee_rate.fee_vb(package_vsize);
+		let package_fee = urgent_fee_rate.fee_vb(package_vsize.try_into()?).unwrap();
 
 		// Since BDK doesn't allow tx without recipients, we add a drain output.
-		let change_addr = self.wallet.try_get_internal_address(bdk::wallet::AddressIndex::New)?;
+		let change_addr = self.wallet.next_unused_address(KeychainKind::Internal);
 
 		let template_size = {
 			let mut b = self.wallet.build_tx();
 			Wallet::add_anchors(&mut b, anchors);
-			b.add_recipient(change_addr.address.script_pubkey(), package_fee + ark::P2TR_DUST_SAT);
+			b.add_recipient(change_addr.address.script_pubkey(), package_fee + Amount::from_sat(ark::P2TR_DUST_SAT));
 			b.fee_rate(urgent_fee_rate);
 			let mut psbt = b.finish().expect("failed to craft anchor spend template");
 			let opts = SignOptions {
@@ -199,11 +235,11 @@ impl Wallet {
 			let finalized = self.wallet.sign(&mut psbt, opts)
 				.expect("failed to sign anchor spend template");
 			assert!(finalized);
-			psbt.extract_tx().vsize()
+			psbt.extract_tx()?.vsize()
 		};
 
 		let total_vsize = template_size + package_vsize;
-		let total_fee = self.urgent_fee_rate_bdk().fee_vb(total_vsize);
+		let total_fee = self.urgent_fee_rate_bdk().fee_vb(total_vsize as u64).unwrap();
 
 		// Then build actual tx.
 		let mut b = self.wallet.build_tx();
@@ -224,7 +260,7 @@ impl Wallet {
 		let urgent_fee_rate = self.urgent_fee_rate_bdk();
 
 		// Since BDK doesn't allow tx without recipients, we add a drain output.
-		let change_addr = self.wallet.try_get_internal_address(bdk::wallet::AddressIndex::New)?;
+		let change_addr = self.wallet.next_unused_address(KeychainKind::Internal);
 
 		let mut b = self.wallet.build_tx();
 		b.version(2);
@@ -233,7 +269,7 @@ impl Wallet {
 			psbt_in.set_claim_input(input);
 			psbt_in.witness_utxo = Some(TxOut {
 				script_pubkey: input.spec.exit_spk(),
-				value: input.spec.amount.to_sat(),
+				value: input.spec.amount,
 			});
 			b.add_foreign_utxo_with_sequence(
 				input.utxo,

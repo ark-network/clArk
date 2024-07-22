@@ -131,12 +131,12 @@ impl VtxoTreeSpec {
 	}
 
 	pub fn cosign_spk(&self) -> ScriptBuf {
-		ScriptBuf::new_v1_p2tr_tweaked(self.cosign_taproot().output_key())
+		ScriptBuf::new_p2tr_tweaked(self.cosign_taproot().output_key())
 	}
 
 	fn node_tx(&self, children: &[&Transaction]) -> Transaction {
 		Transaction {
-			version: 2,
+			version: bitcoin::transaction::Version::TWO,
 			lock_time: bitcoin::absolute::LockTime::ZERO,
 			input: vec![TxIn {
 				previous_output: OutPoint::null(),
@@ -159,7 +159,7 @@ impl VtxoTreeSpec {
 				};
 				TxOut {
 					script_pubkey: self.cosign_spk(),
-					value: child.output.iter().map(|o| o.value).sum::<u64>() + fee_budget,
+					value: child.output.iter().map(|o| o.value).sum::<Amount>() + Amount::from_sat(fee_budget),
 				}
 			}).collect(),
 		}
@@ -178,7 +178,7 @@ impl VtxoTreeSpec {
 	fn leaf_tx(&self, vtxo: &VtxoRequest) -> Transaction {
 		let vtxo_spec = self.vtxo_spec(vtxo);
 		Transaction {
-			version: 2,
+			version: bitcoin::transaction::Version::TWO,
 			lock_time: bitcoin::absolute::LockTime::ZERO,
 			input: vec![TxIn {
 				previous_output: OutPoint::null(),
@@ -189,7 +189,7 @@ impl VtxoTreeSpec {
 			output: vec![
 				TxOut {
 					script_pubkey: vtxo_spec.exit_spk(),
-					value: vtxo.amount.to_sat(),
+					value: vtxo.amount,
 				},
 				fee::dust_anchor(),
 			],
@@ -205,7 +205,7 @@ impl VtxoTreeSpec {
 		// This is the root, set to the tree's on-chain utxo.
 		tree.element_at_mut(cursor).unwrap().input[0].previous_output = utxo;
 		while cursor >= tree.nb_leaves() {
-			let txid = tree.element_at(cursor).unwrap().txid();
+			let txid = tree.element_at(cursor).unwrap().compute_txid();
 			let nb_children = tree.nb_children_of(cursor).unwrap();
 			for i in 0..nb_children {
 				let prevout = OutPoint::new(txid, i as u32);
@@ -228,7 +228,7 @@ impl VtxoTreeSpec {
 				// this is the root
 				TxOut {
 					script_pubkey: self.cosign_spk(),
-					value: self.total_required_value().to_sat(),
+					value: self.total_required_value(),
 				}
 			};
 			let el = tree.element_at(idx).unwrap();
@@ -313,20 +313,21 @@ mod test {
 
 	use std::str::FromStr;
 
-	use bitcoin::hashes::sha256;
-	use bitcoin::secp256k1::{self, rand, KeyPair};
+	use bitcoin::hashes::{sha256, Hash};
+	use bitcoin::secp256k1::{self, rand, Keypair, Message};
 
 	use crate::musig;
 
 	#[test]
 	fn test_node_tx_sizes() {
 		let secp = secp256k1::Secp256k1::new();
-		let key1 = KeyPair::new(&secp, &mut rand::thread_rng()); // asp
-		let key2 = KeyPair::new(&secp, &mut rand::thread_rng());
+		let key1 = Keypair::new(&secp, &mut rand::thread_rng()); // asp
+		let key2 = Keypair::new(&secp, &mut rand::thread_rng());
 		let sha = sha256::Hash::from_str("4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a").unwrap();
-		let sig = secp.sign_schnorr(&sha.into(), &key1);
+		let message = Message::from_digest_slice(&sha.to_byte_array()).unwrap();
+		let sig = secp.sign_schnorr(&message, &key1);
 		let dest = VtxoRequest {
-			pubkey: KeyPair::new(&secp, &mut rand::thread_rng()).public_key(),
+			pubkey: Keypair::new(&secp, &mut rand::thread_rng()).public_key(),
 			amount: Amount::from_sat(100_000),
 		};
 		let point = "0000000000000000000000000000000000000000000000000000000000000001:1".parse().unwrap();
@@ -352,7 +353,7 @@ mod test {
 				let mut iter = exit.iter().enumerate().peekable();
 				while let Some((i, cur)) = iter.next() {
 					if let Some((_, next)) = iter.peek() {
-						assert_eq!(next.input[0].previous_output.txid, cur.txid(), "{}", i);
+						assert_eq!(next.input[0].previous_output.txid, cur.compute_txid(), "{}", i);
 					}
 				}
 
@@ -362,7 +363,7 @@ mod test {
 				assert_eq!(leaf.vsize() as u64, LEAF_TX_VSIZE);
 				for node in iter {
 					assert_eq!(
-						node.input[0].witness.serialized_len(),
+						node.input[0].witness.size(),
 						crate::TAPROOT_KEYSPEND_WEIGHT,
 					);
 					match node.output.len() {

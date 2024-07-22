@@ -20,12 +20,12 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::Context;
-use bdk_bitcoind_rpc::bitcoincore_rpc::RpcApi;
+use bdk_bitcoind_rpc::bitcoincore_rpc::{RawTx, RpcApi};
 use bitcoin::{bip32, sighash, psbt, taproot, Amount, Address, OutPoint, Transaction, Witness};
-use bitcoin::secp256k1::{self, KeyPair};
+use bitcoin::secp256k1::{self, Keypair};
 use tokio::sync::{Mutex, RwLock};
 
-use ark::util::KeyPairExt;
+use ark::util::KeypairExt;
 use ark::musig;
 
 use crate::psbtext::{PsbtInputExt, RoundMeta};
@@ -91,11 +91,11 @@ pub struct RoundHandle {
 pub struct App {
 	config: Config,
 	db: database::Db,
-	master_xpriv: bip32::ExtendedPrivKey,
-	master_key: KeyPair,
-	wallet: Mutex<bdk::Wallet<bdk_file_store::Store<'static, bdk::wallet::ChangeSet>>>,
+	master_xpriv: bip32::Xpriv,
+	master_key: Keypair,
+	wallet: Mutex<bdk_wallet::Wallet>,
+	wallet_store: Mutex<bdk_file_store::Store<bdk_wallet::wallet::ChangeSet>>,
 	bitcoind: bdk_bitcoind_rpc::bitcoincore_rpc::Client,
-	
 	rounds: Option<RoundHandle>,
 }
 
@@ -146,23 +146,26 @@ impl App {
 			.context("db error")?
 			.context("db doesn't contain seed")?;
 		let (master_key, xpriv) = {
-			let seed_xpriv = bip32::ExtendedPrivKey::new_master(config.network, &seed).unwrap();
+			let seed_xpriv = bip32::Xpriv::new_master(config.network, &seed).unwrap();
 			let path = bip32::DerivationPath::from_str("m/0").unwrap();
 			let xpriv = seed_xpriv.derive_priv(&SECP, &path).unwrap();
-			let keypair = KeyPair::from_secret_key(&SECP, &xpriv.private_key);
+			let keypair = Keypair::from_secret_key(&SECP, &xpriv.private_key);
 			(keypair, xpriv)
 		};
 
-		let wallet = {
-			let db_path = datadir.join("wallet.db");
-			info!("Loading wallet db from {}", db_path.display());
-			let db = bdk_file_store::Store::<bdk::wallet::ChangeSet>::open_or_create_new(
-				DB_MAGIC.as_bytes(), db_path,
+		let db_path = datadir.join("wallet.db");
+		info!("Loading wallet db from {}", db_path.display());
+		let mut file_store = bdk_file_store::Store::<bdk_wallet::wallet::ChangeSet>::open_or_create_new(
+			DB_MAGIC.as_bytes(), db_path,
 			)?;
+		let wallet = {
+			let change_set = file_store.aggregate_changesets()?;
 
-			let desc = format!("tr({})", xpriv);
-			debug!("Opening BDK wallet with descriptor {}", desc);
-			bdk::Wallet::new_or_load(&desc, None, db, config.network)
+			let edesc = format!("tr({}/84'/0'/0'/0/*)", xpriv);
+			let idesc = format!("tr({}/84'/0'/0'/1/*)", xpriv);
+
+			debug!("Opening BDK wallet with descriptor {}", edesc);
+			bdk_wallet::Wallet::new_or_load(&edesc, &idesc, change_set, config.network)
 				.context("failed to create or load bdk wallet")?
 		};
 
@@ -173,12 +176,13 @@ impl App {
 
 
 		Ok(Arc::new(App {
-			config: config,
-			db: db,
+			config,
+			db,
 			master_xpriv: xpriv,
-			master_key: master_key,
+			master_key,
 			wallet: Mutex::new(wallet),
-			bitcoind: bitcoind,
+			wallet_store: Mutex::new(file_store),
+			bitcoind,
 			rounds: None,
 		}))
 	}
@@ -192,9 +196,9 @@ impl App {
 
 		mut_self.rounds = Some(RoundHandle {
 			round_busy: RwLock::new(()),
-			round_event_tx: round_event_tx,
-			round_input_tx: round_input_tx,
-			round_trigger_tx: round_trigger_tx,
+			round_event_tx,
+			round_input_tx,
+			round_trigger_tx,
 		});
 
 		let app = self.clone();
@@ -237,14 +241,15 @@ impl App {
 
 	pub async fn onchain_address(&self) -> anyhow::Result<Address> {
 		let mut wallet = self.wallet.lock().await;
-		let ret = wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address;
+		let ret = wallet.next_unused_address(bdk_wallet::KeychainKind::External).address;
 		// should always return the same address
-		debug_assert_eq!(ret, wallet.try_get_address(bdk::wallet::AddressIndex::New)?.address);
+		debug_assert_eq!(ret, wallet.next_unused_address(bdk_wallet::KeychainKind::External).address);
 		Ok(ret)
 	}
 
-	pub async fn sync_onchain_wallet(&self) -> anyhow::Result<Amount> {
+	pub async fn sync_onchain_wallet(& self) -> anyhow::Result<Amount> {
 		let mut wallet = self.wallet.lock().await;
+		let mut file_store = self.wallet_store.lock().await;
 		let prev_tip = wallet.latest_checkpoint();
 		// let keychain_spks = self.wallet.spks_of_all_keychains();
 
@@ -255,29 +260,33 @@ impl App {
 
 			if em.block_height() % 10_000 == 0 {
 				debug!("Synced until block {}, committing...", em.block_height());
-				wallet.commit()?;
+				if let Some(change_set) = wallet.take_staged() {
+					file_store.append_changeset(&change_set)?;
+				}
 			}
 		}
 
 		// mempool
 		let mempool = emitter.mempool()?;
 		wallet.apply_unconfirmed_txs(mempool.iter().map(|(tx, time)| (tx, *time)));
-		wallet.commit()?;
+		if let Some(change_set) = wallet.take_staged() {
+			file_store.append_changeset(&change_set)?;
+		}
 
 		// rebroadcast unconfirmed txs
 		// NB during some round failures we commit a tx but fail to broadcast it,
 		// so this ensures we still broadcast them afterwards
 		for tx in wallet.transactions() {
 			if !tx.chain_position.is_confirmed() {
-				let bc = self.bitcoind.send_raw_transaction(tx.tx_node.tx);
+				let bc = self.bitcoind.send_raw_transaction(tx.tx_node.tx.raw_hex());
 				if let Err(e) = bc {
 					warn!("Error broadcasting pending tx: {}", e);
 				}
 			}
 		}
 
-		let balance = wallet.get_balance();
-		Ok(Amount::from_sat(balance.total()))
+		let balance = wallet.balance();
+		Ok(balance.total())
 	}
 
 	pub async fn drain(
@@ -288,20 +297,23 @@ impl App {
 
 		let addr = address.require_network(self.config.network)?;
 
+		let mut file_store = self.wallet_store.lock().await;
 		let mut wallet = self.wallet.lock().await;
 		let mut b = wallet.build_tx();
 		b.drain_to(addr.script_pubkey());
 		b.drain_wallet();
 		let mut psbt = b.finish().context("error building tx")?;
-		let finalized = wallet.sign(&mut psbt, bdk::SignOptions::default())?;
+		let finalized = wallet.sign(&mut psbt, bdk_wallet::SignOptions::default())?;
 		assert!(finalized);
-		let tx = psbt.extract_tx();
-		wallet.commit()?;
+		let tx = psbt.extract_tx()?;
+		if let Some(change_set) = wallet.take_staged() {
+			file_store.append_changeset(&change_set)?;
+		};
 		drop(wallet);
 
-		if let Err(e) = self.bitcoind.send_raw_transaction(&tx) {
+		if let Err(e) = self.bitcoind.send_raw_transaction(tx.raw_hex()) {
 			error!("Error broadcasting tx: {}", e);
-			error!("Try yourself: {}", bitcoin::consensus::encode::serialize_hex(&tx));
+			error!("Try yourself: {}", tx.raw_hex());
 		}
 
 		Ok(tx)
@@ -404,7 +416,7 @@ impl App {
 						let wit = Witness::from_slice(
 							&[&sig[..], script.as_bytes(), &control.serialize()],
 						);
-						debug_assert_eq!(wit.serialized_len(), ark::tree::signed::NODE_SPEND_WEIGHT);
+						debug_assert_eq!(wit.size(), ark::tree::signed::NODE_SPEND_WEIGHT);
 						input.final_script_witness = Some(wit);
 					},
 					RoundMeta::Connector => {
@@ -443,6 +455,6 @@ pub(crate) struct SpendableUtxo {
 
 impl SpendableUtxo {
 	pub fn amount(&self) -> Amount {
-		Amount::from_sat(self.psbt.witness_utxo.as_ref().unwrap().value)
+		self.psbt.witness_utxo.as_ref().unwrap().value
 	}
 }

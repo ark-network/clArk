@@ -1,7 +1,7 @@
 rust-ark
 ========
 
-An implementation of the Ark second-layer payment protocol for Bitcoin.
+A proof of concept of the covenant-less implementation of the Ark second-layer payment protocol for Bitcoin written in Rust.
 
 This repository comprises an ASP server, `arkd`, a client wallet, `noah`, and
 a library that contains all the primitives used for these implementations.
